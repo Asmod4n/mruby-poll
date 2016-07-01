@@ -15,7 +15,7 @@ poll.add(fd)
 
 if poll.wait
   poll.pollset.each do |pollfd|
-    puts pollfd.revents
+    puts pollfd.writable?
   end
 end
 ```
