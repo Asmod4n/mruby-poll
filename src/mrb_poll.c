@@ -76,10 +76,15 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
 
   mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
 
+  int poll_retry = 0;
+mrb_poll_retry:
   int ret = poll((struct pollfd *) DATA_PTR(self), RARRAY_LEN(fds), timeout);
 
   switch(ret) {
     case -1: {
+      if (errno == EAGAIN && ++poll_retry < 42) {
+        goto mrb_poll_retry;
+      }
       if (errno == EINTR) {
         return mrb_false_value();
       } else {
@@ -119,7 +124,7 @@ mrb_mruby_poll_gem_init(mrb_state *mrb)
   mrb_define_const(mrb, poll_class, "WrNorm", mrb_fixnum_value(POLLWRNORM));
 
   mrb_define_method(mrb, poll_class, "initialize", mrb_poll_init, MRB_ARGS_NONE());
-  mrb_define_method(mrb, poll_class, "update", mrb_poll_update, MRB_ARGS_NONE());
+  mrb_define_method(mrb, poll_class, "__update", mrb_poll_update, MRB_ARGS_NONE());
   mrb_define_method(mrb, poll_class, "wait", mrb_poll_wait, MRB_ARGS_OPT(1));
 
   mrb_define_const(mrb, mrb->kernel_module, "STDIN_FILENO", mrb_fixnum_value(STDIN_FILENO));

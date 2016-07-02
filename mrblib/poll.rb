@@ -18,13 +18,13 @@ class Poll
 
   def add(fd)
     @fds << fd
-    update
+    __update
   end
 
   alias :<< :add
 
   def remove(fd)
     @fds.delete(fd)
-    update
+    __update
   end
 end
