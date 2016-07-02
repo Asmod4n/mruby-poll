@@ -14,15 +14,17 @@ class Poll
     end
   end
 
-  attr_reader :pollset
+  attr_reader :fds
 
   def add(fd)
-    @pollset << fd
+    @fds << fd
     update
   end
 
+  alias :<< :add
+
   def remove(fd)
-    @pollset.delete(fd)
+    @fds.delete(fd)
     update
   end
 end
