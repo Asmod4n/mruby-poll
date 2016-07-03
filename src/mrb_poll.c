@@ -29,9 +29,9 @@ static mrb_value
 mrb_poll_add(mrb_state *mrb, mrb_value self)
 {
   mrb_value socket;
-  mrb_int events;
+  mrb_int events = POLLIN;
 
-  mrb_get_args(mrb, "oi", &socket, &events);
+  mrb_get_args(mrb, "o|i", &socket, &events);
 
   if (unlikely(events < INT_MIN||events > INT_MAX)) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "events doesn't fit into INT");
@@ -57,7 +57,7 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
   }
   mrb_data_init(self, pollfds, &mrb_poll_type);
   struct pollfd *pollfd = &pollfds[RARRAY_LEN(fds)];
-  pollfd->fd = mrb_int(mrb, socket);
+  pollfd->fd = mrb_fixnum(mrb_Integer(mrb, socket));
   pollfd->events = events;
   pollfd->revents = 0;
 
@@ -193,7 +193,7 @@ mrb_pollfd_set_socket(mrb_state *mrb, mrb_value self)
 
   mrb_get_args(mrb, "o", &socket);
 
-  ((struct pollfd *) DATA_PTR(self))->fd = mrb_int(mrb, socket);
+  ((struct pollfd *) DATA_PTR(self))->fd = mrb_fixnum(mrb_Integer(mrb, socket));
 
   mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "socket"), socket);
 
