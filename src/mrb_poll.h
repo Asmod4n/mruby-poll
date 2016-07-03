@@ -22,4 +22,8 @@ static const struct mrb_data_type mrb_poll_type = {
   "$i_mrb_poll", mrb_poll_free
 };
 
+static const struct mrb_data_type mrb_pollfd_type = {
+  "$i_mrb_pollfd", NULL
+};
+
 #endif

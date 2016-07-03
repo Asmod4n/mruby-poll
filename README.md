@@ -7,26 +7,24 @@ Example
 ```ruby
 poll = Poll.new
 
-fd = Poll::Fd.new
-fd.fd = STDOUT_FILENO
-fd.events = Poll::Out
-
-poll << fd
+pollfd = poll.add(STDOUT_FILENO, Poll::Out)
 
 if poll.wait
   poll.fds.each do |pollfd|
-    puts pollfd.writable?
+    if pollfd.writable?
+      puts pollfd.socket
+    end
   end
 end
 ```
 
-Documentation
+"Documentation"
 =============
 
 ```ruby
 class Poll
-  def add(fd) # adds a Poll::Fd struct to the pollfds, its equivalent to the pollfd struct from <poll.h>
-  alias :<< :add
+  def add(socket, events = Poll::In) # adds a Ruby Socket/IO Object to the pollfds
+  # returns a Poll::Fd
   def remove(fd) # deletes a Poll::Fd struct from the pollfds
   def wait((optional) (int) timeout) # waits until a fd becomes ready, its equivalent to the poll function from <poll.h>
   # returns "false" when the process gets interrupted
