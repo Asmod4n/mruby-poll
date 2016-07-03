@@ -252,6 +252,30 @@ mrb_pollfd_set_revents(mrb_state *mrb, mrb_value self)
   return self;
 }
 
+static mrb_value
+mrb_pollfd_readable(mrb_state *mrb, mrb_value self)
+{
+  mrb_assert(DATA_PTR(self));
+
+  return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLIN);
+}
+
+static mrb_value
+mrb_pollfd_writable(mrb_state *mrb, mrb_value self)
+{
+  mrb_assert(DATA_PTR(self));
+
+  return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLOUT);
+}
+
+static mrb_value
+mrb_pollfd_error(mrb_state *mrb, mrb_value self)
+{
+  mrb_assert(DATA_PTR(self));
+
+  return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLERR);
+}
+
 void
 mrb_mruby_poll_gem_init(mrb_state *mrb)
 {
@@ -283,6 +307,9 @@ mrb_mruby_poll_gem_init(mrb_state *mrb)
   mrb_define_method(mrb, pollfd_class, "events=", mrb_pollfd_set_events, MRB_ARGS_REQ(1));
   mrb_define_method(mrb, pollfd_class, "revents", mrb_pollfd_revents, MRB_ARGS_NONE());
   mrb_define_method(mrb, pollfd_class, "revents=", mrb_pollfd_set_revents, MRB_ARGS_REQ(1));
+  mrb_define_method(mrb, pollfd_class, "readable?", mrb_pollfd_readable, MRB_ARGS_NONE());
+  mrb_define_method(mrb, pollfd_class, "writable?", mrb_pollfd_writable, MRB_ARGS_NONE());
+  mrb_define_method(mrb, pollfd_class, "error?", mrb_pollfd_error, MRB_ARGS_NONE());
 
   mrb_define_const(mrb, mrb->kernel_module, "STDIN_FILENO", mrb_fixnum_value(STDIN_FILENO));
   mrb_define_const(mrb, mrb->kernel_module, "STDOUT_FILENO", mrb_fixnum_value(STDOUT_FILENO));
