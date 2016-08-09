@@ -9,11 +9,9 @@ poll = Poll.new
 
 pollfd = poll.add(STDOUT_FILENO, Poll::Out)
 
-if poll.wait
-  poll.fds.each do |pollfd|
-    if pollfd.writable?
-      puts pollfd.socket
-    end
+if ready_fds = poll.wait
+  ready_fds.each do |ready_fd|
+    puts ready_fd
   end
 end
 ```
@@ -26,9 +24,10 @@ class Poll
   def add(socket, events = Poll::In) # adds a Ruby Socket/IO Object to the pollfds
   # returns a Poll::_Fd
   def remove(fd) # deletes a Poll::_Fd struct from the pollfds
-  def wait((optional) (int) timeout) # waits until a fd becomes ready, its equivalent to the poll function from <poll.h>
+  def wait((optional) (int) timeout) # waits until a fd becomes ready, its using the poll function from <poll.h>
   # returns "false" when the process gets interrupted
-  # returns "nil" when wait times out
+  # returns "nil" when it times out
+  # returns a array when ready fds have been found
   # raises exceptions according to other errors
 end
 ```

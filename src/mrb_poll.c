@@ -17,7 +17,7 @@ mrb_poll_init(mrb_state *mrb, mrb_value self)
 
   mrb_data_init(self, NULL, NULL);
 
-  mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "@fds"), mrb_ary_new_capa(mrb, 1));
+  mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "fds"), mrb_ary_new_capa(mrb, 1));
 
   return self;
 }
@@ -40,7 +40,7 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_RUNTIME_ERROR, "events doesn't fit into INT");
   }
 
-  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
+  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
   struct pollfd *pollfds = NULL;
@@ -78,7 +78,7 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
     return mrb_nil_value();
   }
 
-  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
+  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
   mrb_value pollfd_obj;
@@ -138,7 +138,7 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
     mrb_raise(mrb, E_ARGUMENT_ERROR, "timeout doesn't fit into INT");
   }
 
-  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
+  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
   struct pollfd *pollfds = (struct pollfd *) DATA_PTR(self);
