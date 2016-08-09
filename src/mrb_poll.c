@@ -17,10 +17,7 @@ mrb_poll_init(mrb_state *mrb, mrb_value self)
 
   mrb_data_init(self, NULL, NULL);
 
-  mrb_sym fds_sym = mrb_intern_lit(mrb, "@fds");
-  mrb_value fds = mrb_ary_new_capa(mrb, 1);
-
-  mrb_iv_set(mrb, self, fds_sym, fds);
+  mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "@fds"), mrb_ary_new_capa(mrb, 1));
 
   return self;
 }
@@ -32,6 +29,12 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
   mrb_int events = POLLIN;
 
   mrb_get_args(mrb, "o|i", &socket, &events);
+
+  mrb_int fd = mrb_fixnum(mrb_Integer(mrb, socket));
+
+  if (unlikely(fd < INT_MIN||fd > INT_MAX)) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "fd doesn't fit into INT");
+  }
 
   if (unlikely(events < INT_MIN||events > INT_MAX)) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "events doesn't fit into INT");
@@ -57,7 +60,7 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
   }
   mrb_data_init(self, pollfds, &mrb_poll_type);
   struct pollfd *pollfd = &pollfds[RARRAY_LEN(fds)];
-  pollfd->fd = mrb_fixnum(mrb_Integer(mrb, socket));
+  pollfd->fd = fd;
   pollfd->events = events;
   pollfd->revents = 0;
 
@@ -72,7 +75,7 @@ static mrb_value
 mrb_poll_remove(mrb_state *mrb, mrb_value self)
 {
   if (unlikely(!DATA_PTR(self))) {
-    mrb_raise(mrb, E_ARGUMENT_ERROR, "No fds registered for polling");
+    return mrb_nil_value();
   }
 
   mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
@@ -124,7 +127,7 @@ static mrb_value
 mrb_poll_wait(mrb_state *mrb, mrb_value self)
 {
   if (unlikely(!DATA_PTR(self))) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "No fds registered for polling");
+    return mrb_false_value();
   }
 
   mrb_int timeout = -1;
@@ -132,29 +135,37 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
   mrb_get_args(mrb, "|i", &timeout);
 
   if (unlikely(timeout < INT_MIN||timeout > INT_MAX)) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "timeout doesn't fit into INT");
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "timeout doesn't fit into INT");
   }
 
   mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
-  int ret = poll((struct pollfd *) DATA_PTR(self), RARRAY_LEN(fds), timeout);
+  struct pollfd *pollfds = (struct pollfd *) DATA_PTR(self);
+
+  errno = 0;
+  int ret = poll(pollfds, RARRAY_LEN(fds), timeout);
 
   if (unlikely(ret == -1)) {
     if (errno == EINTR) {
       return mrb_false_value();
     } else {
       mrb_sys_fail(mrb, "poll");
+      return self;
     }
   }
   else if (ret == 0) {
     return mrb_nil_value();
   }
   else {
-    return mrb_fixnum_value(ret);
+    mrb_value ready_fds = mrb_ary_new_capa(mrb, ret);
+    for (mrb_int i = 0; i < RARRAY_LEN(fds); i++) {
+      if (pollfds[i].revents) {
+        mrb_ary_push(mrb, ready_fds, mrb_ary_ref(mrb, fds, i));
+      }
+    }
+    return ready_fds;
   }
-
-  return mrb_fixnum_value(ret);
 }
 
 static mrb_value
@@ -170,8 +181,7 @@ mrb_pollfd_init(mrb_state *mrb, mrb_value self)
 
   mrb_get_args(mrb, "o", &socket);
 
-  mrb_sym socket_sym = mrb_intern_lit(mrb, "socket");
-  mrb_iv_set(mrb, self, socket_sym, socket);
+  mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "socket"), socket);
 
   return self;
 }
@@ -193,7 +203,13 @@ mrb_pollfd_set_socket(mrb_state *mrb, mrb_value self)
 
   mrb_get_args(mrb, "o", &socket);
 
-  ((struct pollfd *) DATA_PTR(self))->fd = mrb_fixnum(mrb_Integer(mrb, socket));
+  mrb_int fd = mrb_fixnum(mrb_Integer(mrb, socket));
+
+  if (unlikely(fd < INT_MIN||fd > INT_MAX)) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "fd doesn't fit into INT");
+  }
+
+  ((struct pollfd *) DATA_PTR(self))->fd = fd;
 
   mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "socket"), socket);
 
