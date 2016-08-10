@@ -54,7 +54,8 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
     mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
   }
   if (DATA_PTR(self) && DATA_PTR(self) != pollfds) {
-    for (mrb_int i = 0; i < RARRAY_LEN(fds); ++i) {
+    mrb_int i;
+    for (i = 0; i < RARRAY_LEN(fds); ++i) {
       mrb_data_init(mrb_ary_ref(mrb, fds, i), &pollfds[i], &mrb_pollfd_type);
     }
   }
@@ -97,7 +98,8 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
   else {
     struct pollfd *pollfds = (struct pollfd *) DATA_PTR(self);
 
-    for (mrb_int i = 0; i < RARRAY_LEN(fds); i++) {
+    mrb_int i;
+    for (i = 0; i < RARRAY_LEN(fds); i++) {
       if (pollfd == &pollfds[i]) {
         struct pollfd *ptr = pollfds + i;
         mrb_int len = RARRAY_LEN(fds) - i;
@@ -108,7 +110,8 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
         mrb_funcall(mrb, fds, "delete_at", 1, mrb_fixnum_value(i));
         pollfds = (struct pollfd *) realloc(DATA_PTR(self), RARRAY_LEN(fds) * sizeof(struct pollfd));
         if (DATA_PTR(self) != pollfds) {
-          for (mrb_int j = 0; j < RARRAY_LEN(fds); j++) {
+          mrb_int j;
+          for (j = 0; j < RARRAY_LEN(fds); j++) {
             mrb_data_init(mrb_ary_ref(mrb, fds, j), &pollfds[j], &mrb_pollfd_type);
           }
           mrb_data_init(self, pollfds, &mrb_poll_type);
@@ -159,7 +162,8 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
   }
   else {
     mrb_value ready_fds = mrb_ary_new_capa(mrb, ret);
-    for (mrb_int i = 0; i < RARRAY_LEN(fds); i++) {
+    mrb_int i;
+    for (i = 0; i < RARRAY_LEN(fds); i++) {
       if (pollfds[i].revents) {
         mrb_ary_push(mrb, ready_fds, mrb_ary_ref(mrb, fds, i));
       }
