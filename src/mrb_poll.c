@@ -44,6 +44,8 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
       RARRAY_LEN(fds) + 1 <= SIZE_MAX / sizeof(struct pollfd))) {
 
     pollfds = (struct pollfd *) mrb_realloc(mrb, DATA_PTR(self), (RARRAY_LEN(fds) + 1) * sizeof(struct pollfd));
+  } else {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "cannot add more fds");
   }
   if (DATA_PTR(self) && DATA_PTR(self) != pollfds) {
     mrb_int i;
@@ -90,7 +92,7 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
     struct pollfd *pollfds = (struct pollfd *) DATA_PTR(self);
 
     mrb_int i;
-    for (i = 0; i < RARRAY_LEN(fds); i++) {
+    for (i = 0; i < RARRAY_LEN(fds) ; i++) {
       if (pollfd == &pollfds[i]) {
         struct pollfd *ptr = pollfds + i;
         mrb_int len = RARRAY_LEN(fds) - i;
