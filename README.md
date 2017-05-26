@@ -33,3 +33,39 @@ end
 ```
 
 For other errors take a look at http://pubs.opengroup.org/onlinepubs/007908799/xsh/poll.html
+
+
+```ruby
+class Poll
+  class _Fd
+    def socket() # returns the socket
+    def socket=(socket) # # sets another socket
+    def events() # returns the events
+    def events=(events) # sets events
+    def revents() # returns the events after a poll()
+    def revents=(revents) # sets revents
+    def readable? # returns if the socket is readable
+    def writable? # returns if the socket is writable
+    def err? # returns if the socket is in a error state
+    def disconnected? # returns if the socket is disconnected
+  end
+end
+```
+
+Events
+
+```ruby
+Poll::Err
+Poll::Hub
+Poll::In
+Poll::NVal
+Poll::Out
+Poll::Pri
+Poll::RdBand
+Poll::RdNorm
+Poll::WrBand
+Poll::WrBand
+Poll::WrNorm
+```
+
+For what these events mean take a look at http://pubs.opengroup.org/onlinepubs/007908799/xsh/poll.html
