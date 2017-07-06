@@ -120,8 +120,9 @@ static mrb_value
 mrb_poll_wait(mrb_state *mrb, mrb_value self)
 {
   mrb_int timeout = -1;
+  mrb_value block = mrb_nil_value();
 
-  mrb_get_args(mrb, "|i", &timeout);
+  mrb_get_args(mrb, "|i&", &timeout, &block);
 
   mrb_assert(timeout >= INT_MIN&&timeout <= INT_MAX);
 
@@ -134,14 +135,22 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
   int ret = poll(pollfds, RARRAY_LEN(fds), timeout);
 
   if (ret > 0) {
-    mrb_value ready_fds = mrb_ary_new_capa(mrb, ret);
     mrb_int i;
-    for (i = 0; i < RARRAY_LEN(fds); i++) {
-      if (pollfds[i].revents) {
-        mrb_ary_push(mrb, ready_fds, mrb_ary_ref(mrb, fds, i));
+    if (mrb_type(block) == MRB_TT_PROC) {
+      for (i = 0; i < RARRAY_LEN(fds); i++) {
+        if (pollfds[i].revents) {
+          mrb_yield(mrb, block, mrb_ary_ref(mrb, fds, i));
+        }
       }
+    } else {
+      mrb_value ready_fds = mrb_ary_new_capa(mrb, ret);
+      for (i = 0; i < RARRAY_LEN(fds); i++) {
+        if (pollfds[i].revents) {
+          mrb_ary_push(mrb, ready_fds, mrb_ary_ref(mrb, fds, i));
+        }
+      }
+      return ready_fds;
     }
-    return ready_fds;
   }
   else if (ret == 0) {
     return mrb_nil_value();
@@ -151,12 +160,13 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
       return mrb_false_value();
     } else {
       mrb_sys_fail(mrb, "poll");
-      return self;
     }
   }
   else {
     mrb_raise(mrb, E_RUNTIME_ERROR, "poll returned erroneous value");
   }
+
+  return self;
 }
 
 static mrb_value
@@ -306,7 +316,7 @@ mrb_mruby_poll_gem_init(mrb_state *mrb)
   mrb_define_method(mrb, poll_class, "initialize",  mrb_poll_init, MRB_ARGS_NONE());
   mrb_define_method(mrb, poll_class, "add",         mrb_poll_add, MRB_ARGS_ARG(1, 1));
   mrb_define_method(mrb, poll_class, "remove",      mrb_poll_remove, MRB_ARGS_REQ(1));
-  mrb_define_method(mrb, poll_class, "wait",        mrb_poll_wait, MRB_ARGS_OPT(1));
+  mrb_define_method(mrb, poll_class, "wait",        mrb_poll_wait, MRB_ARGS_OPT(1)|MRB_ARGS_BLOCK());
 
   pollfd_class = mrb_define_class_under(mrb, poll_class, "_Fd", mrb->object_class);
   MRB_SET_INSTANCE_TT(pollfd_class, MRB_TT_DATA);

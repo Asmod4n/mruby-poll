@@ -1,8 +1,8 @@
 # mruby-poll
 Low level system poll for mruby
 
-Example
-=======
+Example without a block
+=======================
 
 ```ruby
 poll = Poll.new
@@ -16,6 +16,20 @@ if ready_fds = poll.wait
 end
 ```
 
+Example with a block
+====================
+```ruby
+poll = Poll.new
+
+pollfd = poll.add(STDOUT_FILENO, Poll::Out)
+
+poll.wait do |ready_fd|
+  if ready_fd == pollfd
+    puts "got STDOUT_FILENO"
+  end
+end
+```
+
 "Documentation"
 =============
 
@@ -24,10 +38,10 @@ class Poll
   def add(socket, events = Poll::In) # adds a Ruby Socket/IO Object to the pollfds
   # returns a Poll::_Fd
   def remove(fd) # deletes a Poll::_Fd struct from the pollfds
-  def wait((optional) (int) timeout) # waits until a fd becomes ready, its using the poll function from <poll.h>
+  def wait((optional) (int) timeout, &block) # waits until a fd becomes ready, its using the poll function from <poll.h>
   # returns "false" when the process gets interrupted
   # returns "nil" when it times out
-  # returns a array when ready fds have been found
+  # returns a array when ready fds have been found, or self when a block is passed
   # raises exceptions according to other errors
 end
 ```
