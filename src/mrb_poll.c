@@ -54,13 +54,13 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
     }
   }
   mrb_data_init(self, pollfds, &mrb_poll_type);
-  struct pollfd *pollfd = &pollfds[RARRAY_LEN(fds)];
-  pollfd->fd = fd;
-  pollfd->events = events;
-  pollfd->revents = 0;
+  struct pollfd *pollfd_ = &pollfds[RARRAY_LEN(fds)];
+  pollfd_->fd = fd;
+  pollfd_->events = events;
+  pollfd_->revents = 0;
 
   mrb_value pollfd_obj = mrb_obj_new(mrb, mrb_class_get_under(mrb, mrb_class(mrb, self), "_Fd"), 1, &socket);
-  mrb_data_init(pollfd_obj, pollfd, &mrb_pollfd_type);
+  mrb_data_init(pollfd_obj, pollfd_, &mrb_pollfd_type);
   mrb_ary_push(mrb, fds, pollfd_obj);
 
   return pollfd_obj;
@@ -75,25 +75,22 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
 
   mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
+  struct pollfd *pollfds = (struct pollfd *) DATA_PTR(self);
 
   mrb_value pollfd_obj;
-
   mrb_get_args(mrb, "o", &pollfd_obj);
+  mrb_data_get_ptr(mrb, pollfd_obj, &mrb_pollfd_type);
 
-  struct pollfd *pollfd = (struct pollfd *) mrb_data_get_ptr(mrb, pollfd_obj, &mrb_pollfd_type);
-
-  if (RARRAY_LEN(fds) == 1) {
+  if (RARRAY_LEN(fds) == 1 && mrb_obj_id(pollfd_obj) == mrb_obj_id(mrb_ary_ref(mrb, fds, 0))) {
     mrb_funcall(mrb, fds, "delete_at", 1, mrb_fixnum_value(0));
     free(DATA_PTR(self));
     mrb_data_init(self, NULL, NULL);
     mrb_data_init(pollfd_obj, NULL, NULL);
     mrb_iv_remove(mrb, pollfd_obj, mrb_intern_lit(mrb, "socket"));
   } else {
-    struct pollfd *pollfds = (struct pollfd *) DATA_PTR(self);
-
     mrb_int i;
     for (i = 0; i < RARRAY_LEN(fds) ; i++) {
-      if (pollfd == &pollfds[i]) {
+      if (mrb_obj_id(pollfd_obj) == mrb_obj_id(mrb_ary_ref(mrb, fds, i))) {
         struct pollfd *ptr = pollfds + i;
         mrb_int len = RARRAY_LEN(fds) - i;
         while (--len) {
