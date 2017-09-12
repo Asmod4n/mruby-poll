@@ -70,7 +70,7 @@ static mrb_value
 mrb_poll_remove(mrb_state *mrb, mrb_value self)
 {
   if (unlikely(!DATA_PTR(self))) {
-    return mrb_nil_value();
+    return mrb_false_value();
   }
 
   mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
@@ -82,14 +82,16 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
   mrb_data_get_ptr(mrb, pollfd_obj, &mrb_pollfd_type);
 
   if (RARRAY_LEN(fds) == 1 && mrb_obj_id(pollfd_obj) == mrb_obj_id(mrb_ary_ref(mrb, fds, 0))) {
-    mrb_funcall(mrb, fds, "delete_at", 1, mrb_fixnum_value(0));
-    free(DATA_PTR(self));
+    mrb_ary_clear(mrb, fds);
+    mrb_free(mrb, DATA_PTR(self));
     mrb_data_init(self, NULL, NULL);
     mrb_data_init(pollfd_obj, NULL, NULL);
     mrb_iv_remove(mrb, pollfd_obj, mrb_intern_lit(mrb, "socket"));
+
+    return self;
   } else {
     mrb_int i;
-    for (i = 0; i < RARRAY_LEN(fds) ; i++) {
+    for (i = 0; i < RARRAY_LEN(fds); i++) {
       if (mrb_obj_id(pollfd_obj) == mrb_obj_id(mrb_ary_ref(mrb, fds, i))) {
         struct pollfd *ptr = pollfds + i;
         mrb_int len = RARRAY_LEN(fds) - i;
@@ -108,10 +110,35 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
         }
         mrb_data_init(pollfd_obj, NULL, NULL);
         mrb_iv_remove(mrb, pollfd_obj, mrb_intern_lit(mrb, "socket"));
-        break;
+
+        return self;
       }
     }
   }
+
+  return mrb_nil_value();
+}
+
+static mrb_value
+mrb_poll_clear(mrb_state *mrb, mrb_value self)
+{
+  if (!DATA_PTR(self)) {
+    return self;
+  }
+
+  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
+
+  mrb_int i;
+  for (i = 0; i < RARRAY_LEN(fds); i++) {
+    mrb_value pollfd_obj = mrb_ary_ref(mrb, fds, i);
+    mrb_data_init(pollfd_obj, NULL, NULL);
+    mrb_iv_remove(mrb, pollfd_obj, mrb_intern_lit(mrb, "socket"));
+  }
+
+  mrb_ary_clear(mrb, fds);
+  mrb_free(mrb, DATA_PTR(self));
+  mrb_data_init(self, NULL, NULL);
 
   return self;
 }
@@ -316,6 +343,7 @@ mrb_mruby_poll_gem_init(mrb_state *mrb)
   mrb_define_method(mrb, poll_class, "initialize",  mrb_poll_init, MRB_ARGS_NONE());
   mrb_define_method(mrb, poll_class, "add",         mrb_poll_add, MRB_ARGS_ARG(1, 1));
   mrb_define_method(mrb, poll_class, "remove",      mrb_poll_remove, MRB_ARGS_REQ(1));
+  mrb_define_method(mrb, poll_class, "clear",       mrb_poll_clear, MRB_ARGS_NONE());
   mrb_define_method(mrb, poll_class, "wait",        mrb_poll_wait, MRB_ARGS_OPT(1)|MRB_ARGS_BLOCK());
 
   pollfd_class = mrb_define_class_under(mrb, poll_class, "_Fd", mrb->object_class);
