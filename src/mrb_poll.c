@@ -25,20 +25,19 @@ mrb_poll_init(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_poll_add(mrb_state *mrb, mrb_value self)
 {
-  mrb_value socket;
-  mrb_int events = POLLIN;
+  mrb_value socket, fds, pollfd_obj;
+  mrb_int events = POLLIN, fd;
+  struct pollfd *pollfds = NULL, *pollfd_ = NULL;
 
   mrb_get_args(mrb, "o|i", &socket, &events);
 
-  mrb_int fd = mrb_fixnum(mrb_Integer(mrb, socket));
+  fd = mrb_fixnum(mrb_Integer(mrb, socket));
 
   mrb_assert(fd >= INT_MIN&&fd <= INT_MAX);
   mrb_assert(events >= INT_MIN&&events <= INT_MAX);
 
-  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
-
-  struct pollfd *pollfds = NULL;
 
   if (likely(RARRAY_LEN(fds) + 1 > 0 &&
       RARRAY_LEN(fds) + 1 <= SIZE_MAX / sizeof(struct pollfd))) {
@@ -54,12 +53,12 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
     }
   }
   mrb_data_init(self, pollfds, &mrb_poll_type);
-  struct pollfd *pollfd_ = &pollfds[RARRAY_LEN(fds)];
+  pollfd_ = &pollfds[RARRAY_LEN(fds)];
   pollfd_->fd = fd;
   pollfd_->events = events;
   pollfd_->revents = 0;
 
-  mrb_value pollfd_obj = mrb_obj_new(mrb, mrb_class_get_under(mrb, mrb_class(mrb, self), "_Fd"), 1, &socket);
+  pollfd_obj = mrb_obj_new(mrb, mrb_class_get_under(mrb, mrb_class(mrb, self), "_Fd"), 1, &socket);
   mrb_data_init(pollfd_obj, pollfd_, &mrb_pollfd_type);
   mrb_ary_push(mrb, fds, pollfd_obj);
 
@@ -69,15 +68,17 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_poll_remove(mrb_state *mrb, mrb_value self)
 {
+  mrb_value fds, pollfd_obj;
+  struct pollfd *pollfds = NULL;
+
   if (unlikely(!DATA_PTR(self))) {
     return mrb_false_value();
   }
 
-  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
-  struct pollfd *pollfds = (struct pollfd *) DATA_PTR(self);
+  pollfds = (struct pollfd *) DATA_PTR(self);
 
-  mrb_value pollfd_obj;
   mrb_get_args(mrb, "o", &pollfd_obj);
   mrb_data_get_ptr(mrb, pollfd_obj, &mrb_pollfd_type);
 
@@ -90,8 +91,7 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
 
     return self;
   } else {
-    mrb_int i;
-    for (i = 0; i < RARRAY_LEN(fds); i++) {
+    for (mrb_int i = 0; i < RARRAY_LEN(fds); i++) {
       if (mrb_obj_id(pollfd_obj) == mrb_obj_id(mrb_ary_ref(mrb, fds, i))) {
         struct pollfd *ptr = pollfds + i;
         mrb_int len = RARRAY_LEN(fds) - i;
@@ -122,15 +122,16 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_poll_clear(mrb_state *mrb, mrb_value self)
 {
+  mrb_value fds;
+
   if (!DATA_PTR(self)) {
     return self;
   }
 
-  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
-  mrb_int i;
-  for (i = 0; i < RARRAY_LEN(fds); i++) {
+  for (mrb_int i = 0; i < RARRAY_LEN(fds); i++) {
     mrb_value pollfd_obj = mrb_ary_ref(mrb, fds, i);
     mrb_data_init(pollfd_obj, NULL, NULL);
     mrb_iv_remove(mrb, pollfd_obj, mrb_intern_lit(mrb, "socket"));
@@ -146,32 +147,34 @@ mrb_poll_clear(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_poll_wait(mrb_state *mrb, mrb_value self)
 {
+  mrb_value fds;
   mrb_int timeout = -1;
   mrb_value block = mrb_nil_value();
+  struct pollfd *pollfds = NULL;
+  int ret;
 
   mrb_get_args(mrb, "|i&", &timeout, &block);
 
   mrb_assert(timeout >= INT_MIN&&timeout <= INT_MAX);
 
-  mrb_value fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
-  struct pollfd *pollfds = (struct pollfd *) DATA_PTR(self);
+  pollfds = (struct pollfd *) DATA_PTR(self);
 
   errno = 0;
-  int ret = poll(pollfds, RARRAY_LEN(fds), timeout);
+  ret = poll(pollfds, RARRAY_LEN(fds), timeout);
 
   if (ret > 0) {
-    mrb_int i;
     if (mrb_type(block) == MRB_TT_PROC) {
-      for (i = 0; i < RARRAY_LEN(fds); i++) {
+      for (mrb_int i = 0; i < RARRAY_LEN(fds); i++) {
         if (pollfds[i].revents) {
           mrb_yield(mrb, block, mrb_ary_ref(mrb, fds, i));
         }
       }
     } else {
       mrb_value ready_fds = mrb_ary_new_capa(mrb, ret);
-      for (i = 0; i < RARRAY_LEN(fds); i++) {
+      for (mrb_int i = 0; i < RARRAY_LEN(fds); i++) {
         if (pollfds[i].revents) {
           mrb_ary_push(mrb, ready_fds, mrb_ary_ref(mrb, fds, i));
         }
@@ -199,13 +202,13 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_pollfd_init(mrb_state *mrb, mrb_value self)
 {
+  mrb_value socket;
+
   if (unlikely(DATA_PTR(self))) {
     mrb_free(mrb, DATA_PTR(self));
   }
 
   mrb_data_init(self, NULL, NULL);
-
-  mrb_value socket;
 
   mrb_get_args(mrb, "o", &socket);
 
@@ -225,13 +228,14 @@ mrb_pollfd_socket(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_pollfd_set_socket(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
   mrb_value socket;
+  mrb_int fd;
+
+  mrb_assert(DATA_PTR(self));
 
   mrb_get_args(mrb, "o", &socket);
 
-  mrb_int fd = mrb_fixnum(mrb_Integer(mrb, socket));
+  fd = mrb_fixnum(mrb_Integer(mrb, socket));
 
   mrb_assert(fd >= INT_MIN&&fd <= INT_MAX);
 
@@ -253,9 +257,9 @@ mrb_pollfd_events(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_pollfd_set_events(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
   mrb_int events;
+
+  mrb_assert(DATA_PTR(self));
 
   mrb_get_args(mrb, "i", &events);
 
@@ -277,9 +281,9 @@ mrb_pollfd_revents(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_pollfd_set_revents(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
   mrb_int revents;
+
+  mrb_assert(DATA_PTR(self));
 
   mrb_get_args(mrb, "i", &revents);
 
