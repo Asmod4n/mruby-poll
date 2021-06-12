@@ -31,7 +31,7 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
 
   mrb_get_args(mrb, "o|i", &socket, &events);
 
-  fd = mrb_fixnum(mrb_Integer(mrb, socket));
+  fd = mrb_integer(mrb_convert_to_integer(mrb, socket, 0));;
 
   mrb_assert(fd >= INT_MIN&&fd <= INT_MAX);
   mrb_assert(events >= INT_MIN&&events <= INT_MAX);
@@ -43,26 +43,27 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
       RARRAY_LEN(fds) + 1 <= SIZE_MAX / sizeof(struct pollfd))) {
 
     pollfds = (struct pollfd *) mrb_realloc(mrb, DATA_PTR(self), (RARRAY_LEN(fds) + 1) * sizeof(struct pollfd));
+    if (DATA_PTR(self) && DATA_PTR(self) != pollfds) {
+      mrb_int i;
+      for (i = 0; i < RARRAY_LEN(fds); ++i) {
+        mrb_data_init(mrb_ary_ref(mrb, fds, i), &pollfds[i], &mrb_pollfd_type);
+      }
+    }
+    mrb_data_init(self, pollfds, &mrb_poll_type);
+    pollfd_ = &pollfds[RARRAY_LEN(fds)];
+    pollfd_->fd = (int) fd;
+    pollfd_->events = (int) events;
+    pollfd_->revents = 0;
+
+    pollfd_obj = mrb_obj_new(mrb, mrb_class_get_under(mrb, mrb_class(mrb, self), "_Fd"), 1, &socket);
+    mrb_data_init(pollfd_obj, pollfd_, &mrb_pollfd_type);
+    mrb_ary_push(mrb, fds, pollfd_obj);
+    return pollfd_obj;
+
   } else {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "cannot add more fds");
+    return mrb_false_value();
   }
-  if (DATA_PTR(self) && DATA_PTR(self) != pollfds) {
-    mrb_int i;
-    for (i = 0; i < RARRAY_LEN(fds); ++i) {
-      mrb_data_init(mrb_ary_ref(mrb, fds, i), &pollfds[i], &mrb_pollfd_type);
-    }
-  }
-  mrb_data_init(self, pollfds, &mrb_poll_type);
-  pollfd_ = &pollfds[RARRAY_LEN(fds)];
-  pollfd_->fd = fd;
-  pollfd_->events = events;
-  pollfd_->revents = 0;
-
-  pollfd_obj = mrb_obj_new(mrb, mrb_class_get_under(mrb, mrb_class(mrb, self), "_Fd"), 1, &socket);
-  mrb_data_init(pollfd_obj, pollfd_, &mrb_pollfd_type);
-  mrb_ary_push(mrb, fds, pollfd_obj);
-
-  return pollfd_obj;
 }
 
 static mrb_value
@@ -99,7 +100,7 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
           *ptr = *(ptr+1);
           ++ptr;
         }
-        mrb_funcall(mrb, fds, "delete_at", 1, mrb_fixnum_value(i));
+        mrb_funcall(mrb, fds, "delete_at", 1, mrb_int_value(mrb, i));
         pollfds = (struct pollfd *) mrb_realloc(mrb, DATA_PTR(self), RARRAY_LEN(fds) * sizeof(struct pollfd));
         if (DATA_PTR(self) != pollfds) {
           mrb_int j;
@@ -220,112 +221,132 @@ mrb_pollfd_init(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_pollfd_socket(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
-  return mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "socket"));
+  if (likely(DATA_PTR(self))) {
+    return mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "socket"));
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }
 }
 
 static mrb_value
 mrb_pollfd_set_socket(mrb_state *mrb, mrb_value self)
 {
-  mrb_value socket;
-  mrb_int fd;
+  if (likely(DATA_PTR(self))) {
+    mrb_value socket;
+    mrb_int fd;
 
-  mrb_assert(DATA_PTR(self));
+    mrb_get_args(mrb, "o", &socket);
 
-  mrb_get_args(mrb, "o", &socket);
+    fd = mrb_integer(mrb_convert_to_integer(mrb, socket, 0));
 
-  fd = mrb_fixnum(mrb_Integer(mrb, socket));
+    mrb_assert(fd >= INT_MIN && fd <= INT_MAX);
 
-  mrb_assert(fd >= INT_MIN&&fd <= INT_MAX);
+    ((struct pollfd *)DATA_PTR(self))->fd = (int) fd;
 
-  ((struct pollfd *) DATA_PTR(self))->fd = fd;
+    mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "socket"), socket);
 
-  mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "socket"), socket);
-
-  return self;
+    return self;
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }
 }
 
 static mrb_value
 mrb_pollfd_events(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
-  return mrb_fixnum_value(((struct pollfd *) DATA_PTR(self))->events);
+  if (likely(DATA_PTR(self))) {
+    return mrb_int_value(mrb, ((struct pollfd *) DATA_PTR(self))->events);
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }
 }
 
 static mrb_value
 mrb_pollfd_set_events(mrb_state *mrb, mrb_value self)
 {
-  mrb_int events;
+  if (likely(DATA_PTR(self))) {
+    mrb_int events;
 
-  mrb_assert(DATA_PTR(self));
+    mrb_get_args(mrb, "i", &events);
 
-  mrb_get_args(mrb, "i", &events);
+    mrb_assert(events >= INT_MIN && events <= INT_MAX);
 
-  mrb_assert(events >= INT_MIN&&events <= INT_MAX);
+    ((struct pollfd *)DATA_PTR(self))->events = events;
 
-  ((struct pollfd *) DATA_PTR(self))->events = events;
+    return self;
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }
 
-  return self;
 }
 
 static mrb_value
 mrb_pollfd_revents(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
-  return mrb_fixnum_value(((struct pollfd *) DATA_PTR(self))->revents);
+  if (likely(DATA_PTR(self))) {
+    return mrb_int_value(mrb, ((struct pollfd *) DATA_PTR(self))->revents);
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }  
 }
 
 static mrb_value
 mrb_pollfd_set_revents(mrb_state *mrb, mrb_value self)
 {
-  mrb_int revents;
+  if (likely(DATA_PTR(self))) {
+    mrb_int revents;
 
-  mrb_assert(DATA_PTR(self));
+    mrb_get_args(mrb, "i", &revents);
 
-  mrb_get_args(mrb, "i", &revents);
+    mrb_assert(revents >= INT_MIN && revents <= INT_MAX);
 
-  mrb_assert(revents >= INT_MIN&&revents <= INT_MAX);
+    ((struct pollfd *)DATA_PTR(self))->revents = revents;
 
-  ((struct pollfd *) DATA_PTR(self))->revents = revents;
-
-  return self;
+    return self;
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }
 }
 
 static mrb_value
 mrb_pollfd_readable(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
-  return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLIN);
+  if (likely(DATA_PTR(self))) {
+    return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLIN);
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }  
 }
 
 static mrb_value
 mrb_pollfd_writable(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
-  return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLOUT);
+  if (likely(DATA_PTR(self))) {
+    return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLOUT);
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }  
 }
 
 static mrb_value
 mrb_pollfd_error(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
-  return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLERR);
+  if (likely(DATA_PTR(self))) {
+    return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLERR);
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }   
 }
 
 static mrb_value
 mrb_pollfd_disconnected(mrb_state *mrb, mrb_value self)
 {
-  mrb_assert(DATA_PTR(self));
-
-  return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLHUP);
+  if (likely(DATA_PTR(self))) {
+    return mrb_bool_value(((struct pollfd *) DATA_PTR(self))->revents & POLLHUP);
+  } else {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "All poll fds have been cleared");
+  }   
 }
-
 
 void
 mrb_mruby_poll_gem_init(mrb_state *mrb)
@@ -333,16 +354,16 @@ mrb_mruby_poll_gem_init(mrb_state *mrb)
   struct RClass *poll_class, *pollfd_class;
   poll_class = mrb_define_class(mrb, "Poll", mrb->object_class);
   MRB_SET_INSTANCE_TT(poll_class, MRB_TT_DATA);
-  mrb_define_const(mrb, poll_class, "Err", mrb_fixnum_value(POLLERR));
-  mrb_define_const(mrb, poll_class, "Hup", mrb_fixnum_value(POLLHUP));
-  mrb_define_const(mrb, poll_class, "In", mrb_fixnum_value(POLLIN));
-  mrb_define_const(mrb, poll_class, "Nval", mrb_fixnum_value(POLLNVAL));
-  mrb_define_const(mrb, poll_class, "Out", mrb_fixnum_value(POLLOUT));
-  mrb_define_const(mrb, poll_class, "Pri", mrb_fixnum_value(POLLPRI));
-  mrb_define_const(mrb, poll_class, "RdBand", mrb_fixnum_value(POLLRDBAND));
-  mrb_define_const(mrb, poll_class, "RdNorm", mrb_fixnum_value(POLLRDNORM));
-  mrb_define_const(mrb, poll_class, "WrBand", mrb_fixnum_value(POLLWRBAND));
-  mrb_define_const(mrb, poll_class, "WrNorm", mrb_fixnum_value(POLLWRNORM));
+  mrb_define_const(mrb, poll_class, "Err", mrb_int_value(mrb, POLLERR));
+  mrb_define_const(mrb, poll_class, "Hup", mrb_int_value(mrb, POLLHUP));
+  mrb_define_const(mrb, poll_class, "In", mrb_int_value(mrb, POLLIN));
+  mrb_define_const(mrb, poll_class, "Nval", mrb_int_value(mrb, POLLNVAL));
+  mrb_define_const(mrb, poll_class, "Out", mrb_int_value(mrb, POLLOUT));
+  mrb_define_const(mrb, poll_class, "Pri", mrb_int_value(mrb, POLLPRI));
+  mrb_define_const(mrb, poll_class, "RdBand", mrb_int_value(mrb, POLLRDBAND));
+  mrb_define_const(mrb, poll_class, "RdNorm", mrb_int_value(mrb, POLLRDNORM));
+  mrb_define_const(mrb, poll_class, "WrBand", mrb_int_value(mrb, POLLWRBAND));
+  mrb_define_const(mrb, poll_class, "WrNorm", mrb_int_value(mrb, POLLWRNORM));
 
   mrb_define_method(mrb, poll_class, "initialize",  mrb_poll_init, MRB_ARGS_NONE());
   mrb_define_method(mrb, poll_class, "add",         mrb_poll_add, MRB_ARGS_ARG(1, 1));
@@ -364,9 +385,9 @@ mrb_mruby_poll_gem_init(mrb_state *mrb)
   mrb_define_method(mrb, pollfd_class, "error?", mrb_pollfd_error, MRB_ARGS_NONE());
   mrb_define_method(mrb, pollfd_class, "disconnected?", mrb_pollfd_disconnected, MRB_ARGS_NONE());
 
-  mrb_define_const(mrb, mrb->kernel_module, "STDIN_FILENO", mrb_fixnum_value(STDIN_FILENO));
-  mrb_define_const(mrb, mrb->kernel_module, "STDOUT_FILENO", mrb_fixnum_value(STDOUT_FILENO));
-  mrb_define_const(mrb, mrb->kernel_module, "STDERR_FILENO", mrb_fixnum_value(STDERR_FILENO));
+  mrb_define_const(mrb, mrb->kernel_module, "STDIN_FILENO", mrb_int_value(mrb, STDIN_FILENO));
+  mrb_define_const(mrb, mrb->kernel_module, "STDOUT_FILENO", mrb_int_value(mrb, STDOUT_FILENO));
+  mrb_define_const(mrb, mrb->kernel_module, "STDERR_FILENO", mrb_int_value(mrb, STDERR_FILENO));
 }
 
 void mrb_mruby_poll_gem_final(mrb_state *mrb) {}
