@@ -75,11 +75,6 @@ Poll::In
 Poll::NVal
 Poll::Out
 Poll::Pri
-Poll::RdBand
-Poll::RdNorm
-Poll::WrBand
-Poll::WrBand
-Poll::WrNorm
 ```
 
 For what these events mean take a look at http://pubs.opengroup.org/onlinepubs/007908799/xsh/poll.html

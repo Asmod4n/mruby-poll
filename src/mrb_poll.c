@@ -269,9 +269,9 @@ mrb_pollfd_set_events(mrb_state *mrb, mrb_value self)
 
     mrb_get_args(mrb, "i", &events);
 
-    mrb_assert(events >= INT_MIN && events <= INT_MAX);
+    mrb_assert(events >= SHRT_MIN && events <= SHRT);
 
-    ((struct pollfd *)DATA_PTR(self))->events = events;
+    ((struct pollfd *)DATA_PTR(self))->events = (short) events;
 
     return self;
   } else {
@@ -298,9 +298,9 @@ mrb_pollfd_set_revents(mrb_state *mrb, mrb_value self)
 
     mrb_get_args(mrb, "i", &revents);
 
-    mrb_assert(revents >= INT_MIN && revents <= INT_MAX);
+    mrb_assert(revents >= SHRT_MIN && revents <= SHRT_MAX);
 
-    ((struct pollfd *)DATA_PTR(self))->revents = revents;
+    ((struct pollfd *)DATA_PTR(self))->revents = (short) revents;
 
     return self;
   } else {
@@ -360,10 +360,6 @@ mrb_mruby_poll_gem_init(mrb_state *mrb)
   mrb_define_const(mrb, poll_class, "Nval", mrb_int_value(mrb, POLLNVAL));
   mrb_define_const(mrb, poll_class, "Out", mrb_int_value(mrb, POLLOUT));
   mrb_define_const(mrb, poll_class, "Pri", mrb_int_value(mrb, POLLPRI));
-  mrb_define_const(mrb, poll_class, "RdBand", mrb_int_value(mrb, POLLRDBAND));
-  mrb_define_const(mrb, poll_class, "RdNorm", mrb_int_value(mrb, POLLRDNORM));
-  mrb_define_const(mrb, poll_class, "WrBand", mrb_int_value(mrb, POLLWRBAND));
-  mrb_define_const(mrb, poll_class, "WrNorm", mrb_int_value(mrb, POLLWRNORM));
 
   mrb_define_method(mrb, poll_class, "initialize",  mrb_poll_init, MRB_ARGS_NONE());
   mrb_define_method(mrb, poll_class, "add",         mrb_poll_add, MRB_ARGS_ARG(1, 1));
