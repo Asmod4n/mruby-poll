@@ -31,7 +31,7 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
 
   mrb_get_args(mrb, "o|i", &socket, &events);
 
-  fd = mrb_integer(mrb_convert_to_integer(mrb, socket, 0));
+  fd = mrb_integer(mrb_to_int(mrb, socket));
 
   mrb_assert(fd >= INT_MIN&&fd <= INT_MAX);
   mrb_assert(events >= INT_MIN&&events <= INT_MAX);
@@ -237,7 +237,7 @@ mrb_pollfd_set_socket(mrb_state *mrb, mrb_value self)
 
     mrb_get_args(mrb, "o", &socket);
 
-    fd = mrb_integer(mrb_convert_to_integer(mrb, socket, 0));
+    fd = mrb_integer(mrb_to_int(mrb, socket));
 
     mrb_assert(fd >= INT_MIN && fd <= INT_MAX);
 
@@ -269,7 +269,7 @@ mrb_pollfd_set_events(mrb_state *mrb, mrb_value self)
 
     mrb_get_args(mrb, "i", &events);
 
-    mrb_assert(events >= SHRT_MIN && events <= SHRT);
+    mrb_assert(events >= SHRT_MIN && events <= SHRT_MAX);
 
     ((struct pollfd *)DATA_PTR(self))->events = (short) events;
 
