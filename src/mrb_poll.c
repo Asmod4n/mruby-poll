@@ -25,13 +25,17 @@ mrb_poll_init(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_poll_add(mrb_state *mrb, mrb_value self)
 {
-  mrb_value socket, fds, pollfd_obj;
+  mrb_value sock, fds, pollfd_obj;
   mrb_int events = POLLIN, fd;
   struct pollfd *pollfds = NULL, *pollfd_ = NULL;
 
-  mrb_get_args(mrb, "o|i", &socket, &events);
+  mrb_get_args(mrb, "o|i", &sock, &events);
+  mrb_value socket = mrb_check_convert_type(mrb, sock, MRB_TT_INTEGER, "Integer", "fileno");
+  if(unlikely(!mrb_fixnum_p(socket))) {
+    mrb_raise(mrb, E_TYPE_ERROR, "not a socket");
+  }
 
-  fd = mrb_integer(mrb_to_int(mrb, socket));
+  fd = mrb_fixnum(socket);
 
   mrb_assert(fd >= INT_MIN&&fd <= INT_MAX);
   mrb_assert(events >= INT_MIN&&events <= INT_MAX);
@@ -55,7 +59,7 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
     pollfd_->events = (int) events;
     pollfd_->revents = 0;
 
-    pollfd_obj = mrb_obj_new(mrb, mrb_class_get_under(mrb, mrb_class(mrb, self), "_Fd"), 1, &socket);
+    pollfd_obj = mrb_obj_new(mrb, mrb_class_get_under(mrb, mrb_class(mrb, self), "_Fd"), 1, &sock);
     mrb_data_init(pollfd_obj, pollfd_, &mrb_pollfd_type);
     mrb_ary_push(mrb, fds, pollfd_obj);
     return pollfd_obj;
@@ -232,18 +236,23 @@ static mrb_value
 mrb_pollfd_set_socket(mrb_state *mrb, mrb_value self)
 {
   if (likely(DATA_PTR(self))) {
-    mrb_value socket;
+    mrb_value sock;
     mrb_int fd;
 
-    mrb_get_args(mrb, "o", &socket);
+    mrb_get_args(mrb, "o", &sock);
+    mrb_value socket = mrb_check_convert_type(mrb, sock, MRB_TT_INTEGER, "Integer", "fileno");
+    if(unlikely(!mrb_fixnum_p(socket))) {
+      mrb_raise(mrb, E_TYPE_ERROR, "not a socket");
+    }
+    
 
-    fd = mrb_integer(mrb_to_int(mrb, socket));
+    fd = mrb_fixnum(socket);
 
     mrb_assert(fd >= INT_MIN && fd <= INT_MAX);
 
     ((struct pollfd *)DATA_PTR(self))->fd = (int) fd;
 
-    mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "socket"), socket);
+    mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "socket"), sock);
 
     return self;
   } else {
