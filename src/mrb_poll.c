@@ -17,7 +17,7 @@ mrb_poll_init(mrb_state *mrb, mrb_value self)
 
   mrb_data_init(self, NULL, NULL);
 
-  mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "fds"), mrb_ary_new_capa(mrb, 1));
+  mrb_iv_set(mrb, self, mrb_intern_lit(mrb, "@fds"), mrb_ary_new_capa(mrb, 1));
 
   return self;
 }
@@ -40,7 +40,7 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
   mrb_assert(fd >= INT_MIN&&fd <= INT_MAX);
   mrb_assert(events >= INT_MIN&&events <= INT_MAX);
 
-  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
   if (likely(RARRAY_LEN(fds) + 1 > 0 &&
@@ -80,7 +80,7 @@ mrb_poll_remove(mrb_state *mrb, mrb_value self)
     return mrb_false_value();
   }
 
-  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
   pollfds = (struct pollfd *) DATA_PTR(self);
 
@@ -133,7 +133,7 @@ mrb_poll_clear(mrb_state *mrb, mrb_value self)
     return self;
   }
 
-  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
   for (mrb_int i = 0; i < RARRAY_LEN(fds); i++) {
@@ -162,7 +162,7 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
 
   mrb_assert(timeout >= INT_MIN&&timeout <= INT_MAX);
 
-  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "fds"));
+  fds = mrb_iv_get(mrb, self, mrb_intern_lit(mrb, "@fds"));
   mrb_assert(mrb_type(fds) == MRB_TT_ARRAY);
 
   pollfds = (struct pollfd *) DATA_PTR(self);
