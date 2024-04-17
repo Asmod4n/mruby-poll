@@ -1,18 +1,14 @@
 class Poll
   class Fd
-    attr_reader :socket
+    attr_reader   :socket
     attr_accessor :events, :revents
 
     def initialize(socket, events)
-      @socket = socket
-      @events = events
+      @socket, @events = socket, events
     end
 
-    alias_method :fileno, :socket
-    alias_method :to_i, :socket
-
     def readable?
-      @revents & Poll::In != 0
+      @revents & Poll::In  != 0
     end
 
     def writable?

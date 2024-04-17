@@ -15,5 +15,6 @@
 #include <mruby/class.h>
 #include <unistd.h>
 #include <string.h>
+#include <mruby/throw.h>
 
 #endif
