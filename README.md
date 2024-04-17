@@ -36,9 +36,9 @@ end
 ```ruby
 class Poll
   def add(socket, events = Poll::In) # adds a Ruby Socket/IO Object to the pollfds
-  # returns a Poll::_Fd
-  def remove(fd) # deletes a Poll::_Fd struct from the pollfds
-  def wait((optional) (int) timeout, &block) # waits until a fd becomes ready, its using the poll function from <poll.h>
+  # returns a Poll::Fd
+  def remove(fd) # deletes a Poll::Fd struct from the pollfds
+  def wait((optional) (int) timeout, &block) # waits until a fd becomes ready, its using the poll function from <sys/poll.h>
   # returns "false" when the process gets interrupted
   # returns "nil" when it times out
   # returns a array when ready fds have been found, or self when a block is passed
@@ -51,7 +51,7 @@ For other errors take a look at http://pubs.opengroup.org/onlinepubs/007908799/x
 
 ```ruby
 class Poll
-  class _Fd
+  class Fd
     def socket() # returns the socket
     def socket=(socket) # # sets another socket
     def events() # returns the events
