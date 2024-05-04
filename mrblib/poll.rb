@@ -9,7 +9,7 @@ class Poll
   end
 
   def remove(socket)
-    if @fds.delete(socket)
+    if @fds.delete(get_fd(socket))
       return self
     end
   end
@@ -23,7 +23,7 @@ class Poll
 
   def remove_update_or_add(socket, events)
     if events == 0
-      @fds.delete(socket)
+      @fds.delete(get_fd(socket))
     else
       if fd = @fds[get_fd(socket)]
         fd.events = events
