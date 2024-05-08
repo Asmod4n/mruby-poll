@@ -1,7 +1,7 @@
 class Poll
   class Fd
     attr_reader   :socket
-    attr_accessor :events, :revents
+    attr_accessor :events, :revents, :userdata
 
     def initialize(socket, events)
       @socket, @events = socket, events

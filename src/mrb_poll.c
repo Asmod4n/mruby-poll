@@ -1,5 +1,4 @@
 #include "mrb_poll.h"
-#include <alloca.h>
 
 #if (__GNUC__ >= 3) || (__INTEL_COMPILER >= 800) || defined(__clang__)
 # define likely(x) __builtin_expect(!!(x), 1)
@@ -20,7 +19,7 @@ mrb_poll_create_pollset(mrb_state *mrb, mrb_value key, mrb_value val, void *data
   struct mrb_pollset_data *userdata = data;
   mrb_value socket = mrb_iv_get(mrb, val, mrb_intern_lit(mrb, "@socket"));
   struct pollfd *pollfd = userdata->pollfds[userdata->hash_pos++];
-  pollfd->fd = (int) mrb_fixnum(mrb_convert_type(mrb, socket, MRB_TT_INTEGER, "Integer", "fileno"));
+  pollfd->fd = mrb_integer(mrb_convert_type(mrb, socket, MRB_TT_INTEGER, "Integer", "fileno"));
   pollfd->events = (short) mrb_as_int(mrb, mrb_iv_get(mrb, val, mrb_intern_lit(mrb, "@events")));
   return 0;
 }
@@ -58,8 +57,8 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
         mrb_raise(mrb, E_RUNTIME_ERROR, "too many fds");
       }
 
-  struct pollfd *pollfds = mrb_malloc(mrb, fds_size * sizeof(struct pollfd));
 
+  struct pollfd *pollfds = mrb_malloc(mrb, fds_size * sizeof(*pollfds));
   struct mrb_pollset_data data = {
     .hash_pos = 0,
     .pollfds = &pollfds
@@ -67,7 +66,11 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
   mrb_hash_foreach(mrb, mrb_hash_ptr(fds), mrb_poll_create_pollset, &data);
 
   errno = 0;
+#ifdef _WIN32
+  ret = WSAPoll(pollfds, fds_size, (int) timeout)
+#else
   ret = poll(pollfds, fds_size, (int) timeout);
+#endif
 
   struct mrb_jmpbuf* prev_jmp = mrb->jmp;
   struct mrb_jmpbuf c_jmp;
@@ -84,7 +87,7 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
       if (mrb_type(block) == MRB_TT_PROC) {
         for (mrb_int i = 0; i < fds_size; i++) {
           if (pollfds[i].revents) {
-            mrb_yield(mrb, block, mrb_hash_get(mrb, fds, mrb_fixnum_value(pollfds[i].fd)));
+            mrb_yield(mrb, block, mrb_hash_get(mrb, fds, mrb_int_value(mrb, pollfds[i].fd)));
             mrb_gc_arena_restore(mrb, idx);
           }
         }
@@ -92,7 +95,7 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
         ret_val = mrb_ary_new_capa(mrb, ret);
         for (mrb_int i = 0; i < fds_size; i++) {
           if (pollfds[i].revents) {
-            mrb_ary_push(mrb, ret_val, mrb_hash_get(mrb, fds, mrb_fixnum_value(pollfds[i].fd)));
+            mrb_ary_push(mrb, ret_val, mrb_hash_get(mrb, fds, mrb_int_value(mrb, pollfds[i].fd)));
           }
         }
       }
@@ -101,6 +104,9 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
       ret_val = mrb_nil_value();
     }
     else if (unlikely(ret == -1)) {
+#ifdef _WIN32
+      errno = WSAGetLastError();
+#endif
       if (errno == EINTR) {
         ret_val = mrb_false_value();
       } else {
@@ -129,8 +135,14 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
 void
 mrb_mruby_poll_gem_init(mrb_state *mrb)
 {
-  struct RClass *poll_class;
-  poll_class = mrb_define_class(mrb, "Poll", mrb->object_class);
+#ifdef _WIN32
+  WSADATA wsaData;
+  int result;
+  result = WSAStartup(MAKEWORD(2,2), &wsaData);
+  if (result != NO_ERROR)
+    mrb_raise(mrb, E_RUNTIME_ERROR, "WSAStartup failed");
+#endif
+  struct RClass *poll_class = mrb_define_class(mrb, "Poll", mrb->object_class);
   mrb_define_const(mrb, poll_class, "Err", mrb_fixnum_value(POLLERR));
   mrb_define_const(mrb, poll_class, "Hup", mrb_fixnum_value(POLLHUP));
   mrb_define_const(mrb, poll_class, "In", mrb_fixnum_value(POLLIN));
@@ -145,4 +157,9 @@ mrb_mruby_poll_gem_init(mrb_state *mrb)
   mrb_define_const(mrb, mrb->kernel_module, "STDERR_FILENO", mrb_fixnum_value(STDERR_FILENO));
 }
 
-void mrb_mruby_poll_gem_final(mrb_state *mrb) {}
+void mrb_mruby_poll_gem_final(mrb_state *mrb)
+{
+#ifdef _WIN32
+  WSACleanup();
+#endif
+}

@@ -4,8 +4,8 @@ class Poll
   end
 
   def add(socket, events = Poll::In)
-    @fds[get_fd(socket)] = Fd.new(socket, events)
-    self
+    @fds[get_fd(socket)] = fd = Fd.new(socket, events)
+    fd
   end
 
   def remove(socket)
@@ -17,21 +17,22 @@ class Poll
   def update(socket, events)
     if fd = @fds[get_fd(socket)]
       fd.events = events
-      return self
     end
+    fd
   end
 
   def remove_update_or_add(socket, events)
     if events == 0
-      @fds.delete(get_fd(socket))
+      remove(socket)
     else
       if fd = @fds[get_fd(socket)]
         fd.events = events
+        fd
       else
-        @fds[get_fd(socket)] = Fd.new(socket, events)
+        @fds[get_fd(socket)] = fd = Fd.new(socket, events)
+        fd
       end
     end
-    self
   end
 
   def clear

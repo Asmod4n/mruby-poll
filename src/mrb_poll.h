@@ -1,6 +1,15 @@
 #ifndef MRB_POLL_H
 #define MRB_POLL_H
 
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <windows.h>
+  #include <winerror.h>
+#else
+  #include <poll.h>
+  #include <unistd.h>
+#endif
+
 #include <stdlib.h>
 #include <mruby.h>
 #ifdef MRB_INT16
@@ -9,11 +18,10 @@
 #include <mruby/hash.h>
 #include <mruby/array.h>
 #include <mruby/variable.h>
-#include <poll.h>
 #include <errno.h>
 #include <mruby/error.h>
 #include <mruby/class.h>
-#include <unistd.h>
+
 #include <string.h>
 #include <mruby/throw.h>
 
