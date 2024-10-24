@@ -57,7 +57,6 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
         mrb_raise(mrb, E_RUNTIME_ERROR, "too many fds");
       }
 
-
   struct pollfd *pollfds = mrb_malloc(mrb, fds_size * sizeof(*pollfds));
   struct mrb_pollset_data data = {
     .hash_pos = 0,
@@ -67,7 +66,7 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
 
   errno = 0;
 #ifdef _WIN32
-  ret = WSAPoll(pollfds, fds_size, (int) timeout)
+  ret = WSAPoll(pollfds, fds_size, (int) timeout);
 #else
   ret = poll(pollfds, fds_size, (int) timeout);
 #endif

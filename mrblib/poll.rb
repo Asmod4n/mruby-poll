@@ -9,9 +9,7 @@ class Poll
   end
 
   def remove(socket)
-    if @fds.delete(get_fd(socket))
-      return self
-    end
+    @fds.delete(get_fd(socket))
   end
 
   def update(socket, events)

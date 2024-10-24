@@ -12,8 +12,14 @@
 
 #include <stdlib.h>
 #include <mruby.h>
-#ifdef MRB_INT16
-#error "MRB_INT16 is too small for mruby-poll"
+#ifdef _WIN32
+  #if MRB_INT_BIT < 64
+  #error "needs 64 bit mruby on windows"
+  #endif
+#else
+  #if MRB_INT_BIT < 32
+  #error "needs at least 32 bit mruby"
+  #endif
 #endif
 #include <mruby/hash.h>
 #include <mruby/array.h>
