@@ -1,328 +1,623 @@
-#include "mrb_poll.hpp"
+// mruby-poll.cpp
+// Implements:
+//   class Poll
+//     - add(socket, events = Poll::In) -> Poll::Fd
+//     - remove(fd_or_handle) -> nil
+//     - wait(timeout_ms = -1) { |Poll::Fd| ... } -> self
+//       or without block -> Array< Poll::Fd >
+//       returns false on EINTR, nil on timeout
+//   class Poll::Fd
+//     - socket / socket=
+//     - events / events=
+//     - revents / revents=
+//     - readable? / writable? / err? / disconnected?
+//
+// Semantics:
+// - One entry per numeric fd (add raises ArgumentError if duplicate).
+// - Safe to call remove/update inside wait: changes are applied in compact() after wait finishes.
+// - When not in a wait, events= syncs to pollfds immediately.
+// - wait yields/returns Poll::Fd objects (same instances created by add).
+//
+// Requires mruby and mruby-io (for fileno/to_i if you pass IO/Socket).
+// On Windows, you’ll likely need a separate WSAPoll path; this is POSIX poll.
 
-//-----------------------------------------------------------------------------
-// 4. Internal FD descriptor
-//-----------------------------------------------------------------------------
-struct Fd {
-  int   fd;
-  short events;
-  bool  marked_for_deletion = false;
+#include "mrb_poll.h"
+#include "mruby/value.h"
+
+#include <poll.h>
+#include <errno.h>
+#include <string.h>
+
+struct PollSet {
+  struct pollfd *fds;
+  size_t pollfd_size;
+  size_t pollfd_capa;
+  mrb_value fds_array;         // Array<Poll::Fd>
+  mrb_value clear_list_array;  // unused in this minimal impl, but kept for API symmetry
 };
 
-struct PendingAdd {
-  int   fd;
-  short events;
+static void
+pollset_free(mrb_state *mrb, void *p)
+{
+  struct PollSet *pollset = (struct PollSet *) p;
+  if (pollset) {
+    mrb_free(mrb, pollset->fds);
+    mrb_free(mrb, p);
+  }
+}
+static const struct mrb_data_type pollset_type = {"PollSet", pollset_free};
+
+struct Pfd {
+  struct pollfd *fd;             // pointer into PollSet->fds[pollfd_index]
+  mrb_int pollfd_index;          // index within PollSet->fds and fds_array
+  mrb_bool marked_for_deletion;  // true if scheduled for removal after wait
 };
+static const struct mrb_data_type pollfd_type = {"Pfd", mrb_free};
 
-struct Ensure {
-  std::function<void()> func;
+/* helpers */
 
-  Ensure(std::function<void()> f) : func(f) {}
+static inline struct PollSet*
+get_pollset(mrb_state *mrb, mrb_value self)
+{
+  return DATA_CHECK_GET_PTR(mrb, self, &pollset_type, struct PollSet);
+}
 
-  ~Ensure() { func(); }
-};
+static inline struct Pfd*
+get_pfd(mrb_state *mrb, mrb_value self)
+{
+  return DATA_CHECK_GET_PTR(mrb, self, &pollfd_type, struct Pfd);
+}
 
-class PollSet {
-public:
-  PollSet(size_t reserve_count = 16) {
-    pollfds.reserve(reserve_count);
-    fds.reserve(reserve_count);
-    pending_adds.reserve(reserve_count);
+static int
+value_to_fd(mrb_state *mrb, mrb_value sock)
+{
+  if (mrb_integer_p(sock)) {
+    return (int)mrb_integer(sock);
   }
+  // Try fileno
+  if (mrb_respond_to(mrb, sock, MRB_SYM(fileno))) {
+    mrb_value v = mrb_funcall_argv(mrb, sock, MRB_SYM(fileno), 0, NULL);
+    if (mrb_integer_p(v)) return (int)mrb_integer(v);
+  }
+  // Fallback to to_i
+  if (mrb_respond_to(mrb, sock, MRB_SYM(to_i))) {
+    mrb_value v = mrb_funcall_argv(mrb, sock, MRB_SYM(to_i), 0, NULL);
+    if (mrb_integer_p(v)) return (int)mrb_integer(v);
+  }
+  mrb_raise(mrb, E_TYPE_ERROR, "socket must be an Integer or respond to #fileno/#to_i");
+  return -1;
+}
 
-  // Enforce uniqueness. If called during wait, defer the insertion.
-  void add(int raw_fd, short events, mrb_state* mrb) {
-    // reject duplicates immediately (even during wait)
-    for (auto& info : fds) {
-      if (info.fd == raw_fd && !info.marked_for_deletion) {
-        mrb_raise(mrb, E_ARGUMENT_ERROR, "fd is already registered");
-        return; // not reached
+static void
+ensure_capacity(mrb_state *mrb, struct PollSet *pollset, size_t need)
+{
+  if (need <= pollset->pollfd_capa) return;
+  size_t newc = pollset->pollfd_capa;
+  while (newc < need) newc *= 2;
+  pollset->fds = (struct pollfd*)mrb_realloc(mrb, pollset->fds, sizeof(struct pollfd) * newc);
+  pollset->pollfd_capa = newc;
+
+  // sync all Poll::Fd pointers after realloc
+  mrb_int n = (mrb_int)pollset->pollfd_size;
+  for (mrb_int i = 0; i < n; ++i) {
+    mrb_value fd_obj = mrb_ary_ref(mrb, pollset->fds_array, i);
+    if (mrb_type(fd_obj) == MRB_TT_DATA) {
+      struct Pfd *p = get_pfd(mrb, fd_obj);
+      if (p) {
+        p->fd = &pollset->fds[i];
+        p->pollfd_index = i;
       }
     }
-
-    if (in_wait) {
-      // queue it safely; no structural change to fds/pollfds
-      try { pending_adds.push_back(PendingAdd{ raw_fd, events }); }
-      catch (const std::bad_alloc&) { mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err)); }
-      need_rebuild = true;
-      return;
-    }
-
-    try {
-      fds.push_back(Fd{ raw_fd, events, false });
-      pollfds.push_back(::pollfd{ raw_fd, events, 0 });
-    } catch (const std::bad_alloc&) {
-      mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
-    }
   }
+}
 
-  // Mark for deletion and delte when possible.
-  void remove(int raw_fd) {
-    for (auto& info : fds) {
-      if (info.fd == raw_fd && !info.marked_for_deletion) {
-        info.marked_for_deletion = true;
-        need_rebuild = true;
-        break;
+static mrb_int
+find_index_by_fd(struct PollSet *pollset, int fd)
+{
+  for (mrb_int i = 0; i < (mrb_int)pollset->pollfd_size; ++i) {
+    if (pollset->fds[i].fd == fd) return i;
+  }
+  return -1;
+}
+
+static void
+sync_fd_pointer_for(struct PollSet *pollset, mrb_state *mrb, mrb_int idx)
+{
+  mrb_value fd_obj = mrb_ary_ref(mrb, pollset->fds_array, idx);
+  struct Pfd *p = get_pfd(mrb, fd_obj);
+  if (p) {
+    p->fd = &pollset->fds[idx];
+    p->pollfd_index = idx;
+  }
+}
+
+static void
+compact_pollset(mrb_state *mrb, mrb_value poll_obj, struct PollSet *pollset)
+{
+  // Rebuild arrays skipping marked entries
+  mrb_int n = (mrb_int)pollset->pollfd_size;
+  mrb_int write_i = 0;
+  for (mrb_int read_i = 0; read_i < n; ++read_i) {
+    mrb_value fd_obj = mrb_ary_ref(mrb, pollset->fds_array, read_i);
+    struct Pfd *p = get_pfd(mrb, fd_obj);
+    if (p && !p->marked_for_deletion) {
+      if (write_i != read_i) {
+        // move pollfd
+        pollset->fds[write_i] = pollset->fds[read_i];
+        // move fd_obj in Ruby array
+        mrb_ary_set(mrb, pollset->fds_array, write_i, fd_obj);
       }
-    }
-    if (!in_wait) {
-      compact();
-    }
-  }
-
-  // Update interest mask; if in wait, defer applying to pollfds.
-  // Returns true if updated, false if fd not found.
-  bool update(int raw_fd, short events) {
-    for (size_t i = 0; i < fds.size(); ++i) {
-      if (fds[i].fd == raw_fd && !fds[i].marked_for_deletion) {
-        fds[i].events = events;
-        if (in_wait) {
-          need_rebuild = true; // rebuild will resync pollfds
-        } else {
-          pollfds[i].events = events;
-        }
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // Remove/update/add in one call (events == 0 => remove).
-  // Returns: -1 removed/not present, 0 added, 1 updated (for binding convenience).
-  int remove_update_or_add(int raw_fd, short events, mrb_state* mrb) {
-    if (events == 0) {
-      remove(raw_fd);
-      return -1;
-    }
-    // try update first
-    if (update(raw_fd, events)) return 1;
-    // otherwise add (will raise if somehow seen as duplicate)
-    add(raw_fd, events, mrb);
-    return 0;
-  }
-
-  // Clear entire set safely.
-  void clear() {
-    if (in_wait) {
-      // mark all for deletion and drop any queued adds
-      for (auto& info : fds) info.marked_for_deletion = true;
-      pending_adds.clear();
-      need_rebuild = true;
-    } else {
-      fds.clear();
-      pollfds.clear();
+      // update pointer/index
+      p->fd = &pollset->fds[write_i];
+      p->pollfd_index = write_i;
+      write_i++;
     }
   }
+  // shrink Ruby array length
+  while (RARRAY_LEN(pollset->fds_array) > (mrb_int)write_i) {
+    mrb_ary_pop(mrb, pollset->fds_array);
+  }
+  pollset->pollfd_size = (size_t)write_i;
 
-  mrb_value wait(int timeout,
-                 mrb_state* mrb,
-                 mrb_value block,
-                 void (*cb)(mrb_state*, mrb_value, int, short))
-  {
-    in_wait = true;
-    Ensure cleanup([this] { compact(); in_wait = false; });
-
-    int ret = ::poll(pollfds.data(), pollfds.size(), timeout);
-    if (ret < 0) mrb_sys_fail(mrb, "poll");
-    else if (ret == 0) return mrb_nil_value();
-
-    for (size_t i = 0; i < pollfds.size(); ++i) {
-      if (pollfds[i].revents != 0) {
-        cb(mrb, block, fds[i].fd, pollfds[i].revents);
-      }
-    }
-    return mrb_convert_number(mrb, ret);
+  // clear clear_list_array if used
+  if (!mrb_nil_p(pollset->clear_list_array)) {
+    mrb_ary_clear(mrb, pollset->clear_list_array);
   }
 
-  mrb_value wait(int timeout, mrb_state* mrb) {
-    in_wait = true;
-    Ensure cleanup([this] { compact(); in_wait = false; });
+  // clear @in_wait flag if any (caller will usually handle)
+  (void)poll_obj;
+}
 
-    mrb_value result = mrb_nil_value();
-    int ret = ::poll(pollfds.data(), pollfds.size(), timeout);
-    if (ret > 0) {
-      result = mrb_ary_new_capa(mrb, ret);
-      mrb_int arena_index = mrb_gc_arena_save(mrb);
-      for (size_t i = 0; i < pollfds.size(); ++i) {
-        if (pollfds[i].revents != 0) {
-          mrb_value pair = mrb_assoc_new(mrb, mrb_convert_number(mrb, fds[i].fd), mrb_convert_number(mrb, pollfds[i].revents));
-          mrb_ary_push(mrb, result, pair);
-          mrb_gc_arena_restore(mrb, arena_index);
-        }
-      }
-    }
-    if (ret < 0) mrb_sys_fail(mrb, "poll");
-    return result;
-  }
+static mrb_bool
+in_wait_p(mrb_state *mrb, mrb_value self)
+{
+  mrb_value v = mrb_iv_get(mrb, self, MRB_SYM(in_wait));
+  return mrb_test(v);
+}
 
-private:
-  std::vector<Fd>             fds;
-  std::vector<struct pollfd>  pollfds;
-
-  // deferral state
-  bool in_wait = false;
-  bool need_rebuild = false;
-  std::vector<PendingAdd> pending_adds;
-
-  void compact() {
-    if (!need_rebuild && pending_adds.empty()) return;
-
-    // erase marked
-    fds.erase(std::remove_if(fds.begin(), fds.end(),
-                             [](const Fd& info){ return info.marked_for_deletion; }),
-              fds.end());
-
-    // apply queued adds (dedupe again in case state changed)
-    for (auto& pa : pending_adds) {
-      bool exists = false;
-      for (auto& info : fds) {
-        if (info.fd == pa.fd) { // if it reappeared, update instead
-          info.events = pa.events;
-          exists = true;
-          break;
-        }
-      }
-      if (!exists) fds.push_back(Fd{ pa.fd, pa.events, false });
-    }
-    pending_adds.clear();
-
-    // rebuild pollfds to match fds and apply updated events
-    pollfds.clear();
-    pollfds.reserve(fds.size());
-    for (auto& info : fds) {
-      pollfds.push_back(::pollfd{ info.fd, info.events, 0 });
-    }
-
-    need_rebuild = false;
-  }
-};
-
-//-----------------------------------------------------------------------------
-// 6. mruby binding & lifecycle
-//-----------------------------------------------------------------------------
-MRB_CPP_DEFINE_TYPE(PollSet, PollSet)
+/* Poll::initialize */
 
 static mrb_value
-mrb_pollset_initialize(mrb_state* mrb, mrb_value self)
+mrb_pollset_initialize(mrb_state *mrb, mrb_value self)
 {
-  mrb_int reserve = 16;
-  mrb_get_args(mrb, "|i", &reserve);
-
-  try {
-    mrb_cpp_new<PollSet>(mrb, self,
-                         static_cast<size_t>(reserve));
-  }
-  catch (const std::bad_alloc&) {
-    mrb_exc_raise(mrb, mrb_obj_value(mrb->nomem_err));
-  }
+  struct PollSet *pollset = (struct PollSet *) mrb_realloc(mrb, DATA_PTR(self), sizeof(*pollset));
+  mrb_data_init(self, pollset, &pollset_type);
+  pollset->fds = (struct pollfd *) mrb_malloc(mrb, sizeof(struct pollfd) * 8);
+  pollset->pollfd_size = 0;
+  pollset->pollfd_capa = 8;
+  pollset->fds_array = mrb_ary_new_capa(mrb, 8);
+  mrb_iv_set(mrb, self, MRB_SYM(fds), pollset->fds_array);
+  pollset->clear_list_array = mrb_ary_new(mrb);
+  mrb_iv_set(mrb, self, MRB_SYM(clear_list), pollset->clear_list_array);
+  mrb_iv_set(mrb, self, MRB_SYM(in_wait), mrb_false_value());
   return self;
 }
 
+/* Poll::Fd#initialize(pollset_obj, index, cptr_to_pollfd, socket_obj) */
+
+// args: pollset_obj, pollfd_index, fd_cptr, socket_obj, socket_fd
 static mrb_value
-mrb_pollset_add(mrb_state* mrb, mrb_value self)
+mrb_pollfd_initialize(mrb_state *mrb, mrb_value self)
 {
-  mrb_int fd, events;
-  mrb_get_args(mrb, "ii", &fd, &events);
-  auto* ps = static_cast<PollSet*>(DATA_PTR(self));
-  ps->add((int)fd, (short)events, mrb);
-  return mrb_convert_number(mrb, fd); // return the fd
+  mrb_value pollset_obj, fd_cptr, socket_obj;
+  mrb_int pollfd_index;
+
+  mrb_get_args(mrb, "oioo", &pollset_obj, &pollfd_index, &fd_cptr, &socket_obj);
+
+  DATA_CHECK_GET_PTR(mrb, pollset_obj, &pollset_type, struct PollSet);
+  mrb_iv_set(mrb, self, MRB_SYM(pollset), pollset_obj);
+
+  struct pollfd *pfd = NULL;
+  if (mrb_cptr_p(fd_cptr)) {
+    pfd = (struct pollfd *) mrb_cptr(fd_cptr);
+  } else {
+    mrb_raise(mrb, E_TYPE_ERROR, "third argument is not a cptr");
+  }
+
+  struct Pfd *pollfd = (struct Pfd *) mrb_realloc(mrb, DATA_PTR(self), sizeof(*pollfd));
+  mrb_data_init(self, pollfd, &pollfd_type);
+  pollfd->fd = pfd;
+  pollfd->pollfd_index = pollfd_index;
+  pollfd->marked_for_deletion = FALSE;
+
+  // keep Ruby socket alive
+  mrb_iv_set(mrb, self, MRB_IVSYM(socket), socket_obj);
+
+
+  return self;
 }
 
+
+
+/* Poll#add(socket, events = POLLIN) -> Poll::Fd */
+
 static mrb_value
-mrb_pollset_update(mrb_state* mrb, mrb_value self)
+mrb_poll_add(mrb_state *mrb, mrb_value self)
 {
-  mrb_int fd, events;
-  mrb_get_args(mrb, "ii", &fd, &events);
-  auto* ps = static_cast<PollSet*>(DATA_PTR(self));
-  bool ok = ps->update((int)fd, (short)events);
-  return ok ? mrb_convert_number(mrb, fd) : mrb_nil_value(); // match old Ruby: fd or nil
+  struct PollSet *pollset = get_pollset(mrb, self);
+  mrb_value socket_v;
+  mrb_int events = POLLIN;
+  mrb_get_args(mrb, "o|i", &socket_v, &events);
+
+  int fdnum = value_to_fd(mrb, socket_v);
+  if (find_index_by_fd(pollset, fdnum) >= 0) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "duplicate fd");
+  }
+
+  // grow capacity if needed
+  ensure_capacity(mrb, pollset, pollset->pollfd_size + 1);
+
+  // append pollfd
+  size_t idx = pollset->pollfd_size;
+  pollset->fds[idx].fd = fdnum;
+  pollset->fds[idx].events = (short)events;
+  pollset->fds[idx].revents = 0;
+
+  // build Poll::Fd object
+  struct RClass* pollfd_cls = mrb_class_get_under_id(mrb, mrb_class(mrb, self), MRB_SYM(_Fd));
+mrb_value args[4];
+args[0] = self;                                      // pollset_obj
+args[1] = mrb_fixnum_value(idx);                       // pollfd_index
+args[2] = mrb_cptr_value(mrb, &pollset->fds[idx]);     // pointer to struct pollfd
+args[3] = socket_v;
+
+mrb_value fd_obj = mrb_obj_new(mrb, pollfd_cls, 4, args);
+
+  // Set socket ivar for convenience/consistency
+
+  // store in array (aligned with pollfd)
+  mrb_ary_push(mrb, pollset->fds_array, fd_obj);
+
+  pollset->pollfd_size++;
+
+  return fd_obj;
 }
 
-static mrb_value
-mrb_pollset_remove_update_or_add(mrb_state* mrb, mrb_value self)
-{
-  mrb_int fd, events;
-  mrb_get_args(mrb, "ii", &fd, &events);
-  auto* ps = static_cast<PollSet*>(DATA_PTR(self));
+/* Poll#update(socket_int, events) -> Integer or nil */
 
-  int res = ps->remove_update_or_add((int)fd, (short)events, mrb);
-  if (res == -1) return mrb_nil_value(); // removed
-  return mrb_convert_number(mrb, fd);    // added or updated -> return fd
+static mrb_value
+mrb_poll_update(mrb_state *mrb, mrb_value self)
+{
+  struct PollSet *pollset = get_pollset(mrb, self);
+  mrb_value socket_v;
+  mrb_int events;
+  mrb_get_args(mrb, "oi", &socket_v, &events);
+  int fdnum = value_to_fd(mrb, socket_v);
+
+  mrb_int idx = find_index_by_fd(pollset, fdnum);
+  if (idx < 0) return mrb_nil_value();
+
+  pollset->fds[idx].events = (short)events;
+  sync_fd_pointer_for(pollset, mrb, idx);
+  return mrb_fixnum_value(fdnum);
 }
 
+/* Poll#clear -> self */
+
 static mrb_value
-mrb_pollset_remove(mrb_state* mrb, mrb_value self)
+mrb_poll_clear(mrb_state *mrb, mrb_value self)
 {
-  mrb_int fd;
-  mrb_get_args(mrb, "i", &fd);
-  auto* ps = static_cast<PollSet*>(DATA_PTR(self));
-  ps->remove(static_cast<int>(fd));
+  struct PollSet *pollset = get_pollset(mrb, self);
+  pollset->pollfd_size = 0;
+  // clear Ruby arrays
+  mrb_ary_clear(mrb, pollset->fds_array);
+  mrb_ary_clear(mrb, pollset->clear_list_array);
+  return self;
+}
+
+/* Poll#remove(fd_or_handle) -> nil */
+
+static mrb_value
+mrb_poll_remove(mrb_state *mrb, mrb_value self)
+{
+  struct PollSet *pollset = get_pollset(mrb, self);
+  mrb_value arg;
+  mrb_get_args(mrb, "o", &arg);
+
+
+  mrb_int idx = -1;
+  if (mrb_type(arg) == MRB_TT_DATA) {
+    // Might be a Poll::Fd
+    struct Pfd *p = get_pfd(mrb, arg);
+    if (p) {
+      // validate that this object still maps to the same slot
+      if (p->pollfd_index >= 0 && p->pollfd_index < (mrb_int)pollset->pollfd_size) {
+        mrb_value cur = mrb_ary_ref(mrb, pollset->fds_array, p->pollfd_index);
+        if (mrb_obj_eq(mrb, cur, arg)) {
+          idx = p->pollfd_index;
+        }
+      }
+      if (idx < 0) {
+        // fallback by fd number
+        idx = find_index_by_fd(pollset, p->fd ? p->fd->fd : -1);
+      }
+    }
+  } else {
+    int fdnum = value_to_fd(mrb, arg);
+    idx = find_index_by_fd(pollset, fdnum);
+  }
+
+  if (idx < 0) return mrb_nil_value(); // no-op
+
+  // mark for deletion
+  mrb_value fd_obj = mrb_ary_ref(mrb, pollset->fds_array, idx);
+  struct Pfd *p = get_pfd(mrb, fd_obj);
+  if (p) p->marked_for_deletion = TRUE;
+
+  if (!in_wait_p(mrb, self)) {
+    // compact immediately when not in wait
+    compact_pollset(mrb, self, pollset);
+  }
   return mrb_nil_value();
 }
 
+/* Poll#remove_update_or_add(fd, events) -> nil or Poll::Fd */
+
 static mrb_value
-mrb_pollset_clear(mrb_state* mrb, mrb_value self)
+mrb_poll_remove_update_or_add(mrb_state *mrb, mrb_value self)
 {
-  auto* ps = static_cast<PollSet*>(DATA_PTR(self));
-  ps->clear();
-  return self; // return self, like the Ruby version
+  struct PollSet *pollset = get_pollset(mrb, self);
+  mrb_value socket_v;
+  mrb_int events;
+  mrb_get_args(mrb, "oi", &socket_v, &events);
+  int fdnum = value_to_fd(mrb, socket_v);
+
+  if (events == 0) {
+    // remove path
+    // We need to actually remove; call internal logic:
+    mrb_int idx = find_index_by_fd(pollset, fdnum);
+    if (idx >= 0) {
+      mrb_value fd_obj = mrb_ary_ref(mrb, pollset->fds_array, idx);
+      struct Pfd *p = get_pfd(mrb, fd_obj);
+      if (p) p->marked_for_deletion = TRUE;
+      if (!in_wait_p(mrb, self)) {
+        compact_pollset(mrb, self, pollset);
+      }
+    }
+    return mrb_nil_value();
+  }
+
+  mrb_int idx = find_index_by_fd(pollset, fdnum);
+  if (idx >= 0) {
+    // update path, return existing Poll::Fd
+    pollset->fds[idx].events = (short)events;
+    sync_fd_pointer_for(pollset, mrb, idx);
+    return mrb_ary_ref(mrb, pollset->fds_array, idx);
+  }
+
+  // add path
+  // mrb_poll_add consumed the same arguments pattern? It expects (socket, [events])
+  // But since we called directly here, re-construct:
+  // Instead, do manual add to avoid re-parsing args:
+  // We'll implement add inline if necessary; above call won't work correctly,
+  // so replace with manual:
+
+  // Manual add:
+  ensure_capacity(mrb, pollset, pollset->pollfd_size + 1);
+  size_t new_idx = pollset->pollfd_size;
+  pollset->fds[new_idx].fd = fdnum;
+  pollset->fds[new_idx].events = (short)events;
+  pollset->fds[new_idx].revents = 0;
+
+  struct RClass* pollfd_cls = mrb_class_get_under_id(mrb, mrb_class(mrb, self), MRB_SYM(_Fd));
+  mrb_value args[4];
+  args[0] = self;
+  args[1] = mrb_fixnum_value((mrb_int)new_idx);
+  args[2] = mrb_cptr_value(mrb, &pollset->fds[new_idx]);
+  args[3] = socket_v;
+  mrb_value fd_obj = mrb_obj_new(mrb, pollfd_cls, 4, args);
+  mrb_ary_push(mrb, pollset->fds_array, fd_obj);
+  pollset->pollfd_size++;
+
+  return fd_obj;
 }
 
+/* Poll#wait(timeout_ms = -1) { |fd| ... } -> self, or -> Array<Poll::Fd>, or false/nil */
+
 static mrb_value
-mrb_pollset_wait(mrb_state* mrb, mrb_value self)
+mrb_poll_wait(mrb_state *mrb, mrb_value self)
 {
+  struct PollSet *pollset = get_pollset(mrb, self);
   mrb_int timeout = -1;
-  mrb_value block = mrb_nil_value();
-  mrb_get_args(mrb, "|i&", &timeout, &block);
+  mrb_value blk = mrb_nil_value();
+  mrb_get_args(mrb, "|i&", &timeout, &blk);
 
-  auto* ps = static_cast<PollSet*>(DATA_PTR(self));
-  if (!mrb_nil_p(block)) {
-    if (mrb_type(block) != MRB_TT_PROC) {
-      mrb_raise(mrb, E_TYPE_ERROR, "not a block");
+  // clear previous revents
+  for (size_t i = 0; i < pollset->pollfd_size; ++i) {
+    pollset->fds[i].revents = 0;
+  }
+
+  mrb_iv_set(mrb, self, MRB_SYM(in_wait), mrb_true_value());
+
+
+  int ret = poll(pollset->fds, (nfds_t)pollset->pollfd_size, (int)timeout);
+
+  if (ret < 0) {
+    int e = errno;
+    mrb_iv_set(mrb, self, MRB_SYM(in_wait), mrb_false_value());
+    if (e == EINTR) {
+      compact_pollset(mrb, self, pollset);
+      return mrb_false_value();
     }
+    mrb_sys_fail(mrb, "poll");
+  }
 
-    auto callback = [](mrb_state* m, mrb_value blk, int fd, short revents) {
-      mrb_value argv[2] = {
-        mrb_convert_number(m, fd),
-        mrb_convert_number(m, revents)
-      };
-      mrb_yield_argv(m, blk, 2, argv);
-    };
+  if (ret == 0) {
+    mrb_iv_set(mrb, self, MRB_SYM(in_wait), mrb_false_value());
+    compact_pollset(mrb, self, pollset);
+    return mrb_nil_value();
+  }
 
-    return ps->wait(static_cast<int>(timeout), mrb, block, callback);
+  // either yield or collect
+  if (!mrb_nil_p(blk)) {
+    // yield each ready fd directly
+    for (size_t i = 0;  i < pollset->pollfd_size; i++) {
+      if (pollset->fds[i].revents != 0) {
+        mrb_value fd_obj = mrb_ary_ref(mrb, pollset->fds_array, i);
+        sync_fd_pointer_for(pollset, mrb, i);
+        mrb_yield_argv(mrb, blk, 1, &fd_obj);
+      }
+    }
+    mrb_iv_set(mrb, self, MRB_SYM(in_wait), mrb_false_value());
+    compact_pollset(mrb, self, pollset);
+    return self;
   } else {
-    return ps->wait(static_cast<int>(timeout), mrb);
+    // build and return array
+    mrb_value ready_ary = mrb_ary_new_capa(mrb, ret);
+    for (size_t i = 0;  i < pollset->pollfd_size; i++) {
+      if (pollset->fds[i].revents != 0) {
+        mrb_value fd_obj = mrb_ary_ref(mrb, pollset->fds_array, i);
+        sync_fd_pointer_for(pollset, mrb, i);
+        mrb_ary_push(mrb, ready_ary, fd_obj);
+      }
+    }
+    mrb_iv_set(mrb, self, MRB_SYM(in_wait), mrb_false_value());
+    compact_pollset(mrb, self, pollset);
+    return ready_ary;
   }
 }
 
-// Gem initialization
-MRB_BEGIN_DECL
-void
-mrb_mruby_poll_gem_init(mrb_state* mrb)
+
+/* Poll::Fd attribute methods */
+
+static mrb_value
+mrb_pollfd_socket_get(mrb_state *mrb, mrb_value self)
 {
-  auto poll_class = mrb_define_class(mrb, "Poll", mrb->object_class);
-  MRB_SET_INSTANCE_TT(poll_class, MRB_TT_DATA);
+  return mrb_iv_get(mrb, self, MRB_IVSYM(socket));
+}
 
-  mrb_define_method(mrb, poll_class, "initialize", mrb_pollset_initialize, MRB_ARGS_OPT(1));
-  mrb_define_method(mrb, poll_class, "add",        mrb_pollset_add,        MRB_ARGS_REQ(2));
-  mrb_define_method(mrb, poll_class, "update",     mrb_pollset_update,     MRB_ARGS_REQ(2));
-  mrb_define_method(mrb, poll_class, "remove",     mrb_pollset_remove,     MRB_ARGS_REQ(1));
-  mrb_define_method(mrb, poll_class, "remove_update_or_add",     mrb_pollset_remove_update_or_add,     MRB_ARGS_REQ(2));
-  mrb_define_method(mrb, poll_class, "clear",        mrb_pollset_clear,        MRB_ARGS_NONE());
-  mrb_define_method(mrb, poll_class, "wait",       mrb_pollset_wait,       MRB_ARGS_OPT(1) | MRB_ARGS_BLOCK());
-  mrb_define_const(mrb, poll_class, "Err", mrb_convert_number(mrb, POLLERR));
-  mrb_define_const(mrb, poll_class, "Hup", mrb_convert_number(mrb, POLLHUP));
-  mrb_define_const(mrb, poll_class, "In", mrb_convert_number(mrb, POLLIN));
-  mrb_define_const(mrb, poll_class, "Nval", mrb_convert_number(mrb, POLLNVAL));
-  mrb_define_const(mrb, poll_class, "Out", mrb_convert_number(mrb, POLLOUT));
-  mrb_define_const(mrb, poll_class, "Pri", mrb_convert_number(mrb, POLLPRI));
+static mrb_value
+mrb_pollfd_socket_set(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  if (!p || !p->fd) return mrb_nil_value();
+  mrb_value v;
+  mrb_get_args(mrb, "o", &v);
+  int fdnum = value_to_fd(mrb, v);
+  p->fd->fd = fdnum;
+  mrb_iv_set(mrb, self, MRB_IVSYM(socket), v);
+  return v;
+}
 
+static mrb_value
+mrb_pollfd_events_get(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  if (!p || !p->fd) return mrb_fixnum_value(0);
+  return mrb_fixnum_value(p->fd->events);
+}
 
-  mrb_define_const(mrb, mrb->kernel_module, "STDIN_FILENO", mrb_convert_number(mrb, STDIN_FILENO));
+static mrb_value
+mrb_pollfd_events_set(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  mrb_int ev;
+  mrb_get_args(mrb, "i", &ev);
+  if (p && p->fd) {
+    p->fd->events = (short)ev;
+  }
+  return mrb_fixnum_value(ev);
+}
+
+static mrb_value
+mrb_pollfd_revents_get(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  if (!p || !p->fd) return mrb_fixnum_value(0);
+  return mrb_fixnum_value(p->fd->revents);
+}
+
+static mrb_value
+mrb_pollfd_revents_set(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  mrb_int ev;
+  mrb_get_args(mrb, "i", &ev);
+  if (p && p->fd) {
+    p->fd->revents = (short)ev;
+  }
+  return mrb_fixnum_value(ev);
+}
+
+static mrb_value
+mrb_pollfd_readable(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  if (!p || !p->fd) return mrb_false_value();
+  return mrb_bool_value((p->fd->revents & POLLIN) != 0);
+}
+
+static mrb_value
+mrb_pollfd_writable(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  if (!p || !p->fd) return mrb_false_value();
+  return mrb_bool_value((p->fd->revents & POLLOUT) != 0);
+}
+
+static mrb_value
+mrb_pollfd_err(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  if (!p || !p->fd) return mrb_false_value();
+  return mrb_bool_value((p->fd->revents & (POLLERR | POLLNVAL)) != 0);
+}
+
+static mrb_value
+mrb_pollfd_disconnected(mrb_state *mrb, mrb_value self)
+{
+  struct Pfd *p = get_pfd(mrb, self);
+  if (!p || !p->fd) return mrb_false_value();
+  return mrb_bool_value((p->fd->revents & POLLHUP) != 0);
+}
+
+/* Gem initialization */
+MRB_BEGIN_DECL
+void mrb_mruby_poll_gem_init(mrb_state* mrb) {
+  struct RClass* poll_cls   = mrb_define_class(mrb, "Poll", mrb->object_class);
+  MRB_SET_INSTANCE_TT(poll_cls, MRB_TT_DATA);
+
+  // Error/event constants
+  mrb_define_const(mrb, poll_cls, "Err",  mrb_fixnum_value(POLLERR));
+  mrb_define_const(mrb, poll_cls, "Hup",  mrb_fixnum_value(POLLHUP));
+  mrb_define_const(mrb, poll_cls, "In",   mrb_fixnum_value(POLLIN));
+  mrb_define_const(mrb, poll_cls, "NVal", mrb_fixnum_value(POLLNVAL));
+  mrb_define_const(mrb, poll_cls, "Out",  mrb_fixnum_value(POLLOUT));
+  mrb_define_const(mrb, poll_cls, "Pri",  mrb_fixnum_value(POLLPRI));
+
+  // Poll methods
+  mrb_undef_method(mrb, poll_cls, "initialize_copy");
+  mrb_define_method(mrb, poll_cls, "initialize", mrb_pollset_initialize, MRB_ARGS_NONE());
+  mrb_define_method(mrb, poll_cls, "add",        mrb_poll_add,        MRB_ARGS_ARG(1,1)); // socket, [events]
+  mrb_define_method(mrb, poll_cls, "update",     mrb_poll_update,     MRB_ARGS_REQ(2));
+  mrb_define_method(mrb, poll_cls, "clear",      mrb_poll_clear,      MRB_ARGS_NONE());
+  mrb_define_method(mrb, poll_cls, "remove",     mrb_poll_remove,     MRB_ARGS_REQ(1));
+  mrb_define_method(mrb, poll_cls, "remove_update_or_add", mrb_poll_remove_update_or_add, MRB_ARGS_REQ(2));
+  mrb_define_method(mrb, poll_cls, "wait",       mrb_poll_wait,       MRB_ARGS_OPT(1)|MRB_ARGS_BLOCK());
+
+  // Nested class Poll::Fd
+  struct RClass* pollfd_cls = mrb_define_class_under(mrb, poll_cls, "_Fd", mrb->object_class);
+  MRB_SET_INSTANCE_TT(pollfd_cls, MRB_TT_DATA);
+
+  mrb_define_method(mrb, pollfd_cls, "initialize", mrb_pollfd_initialize, MRB_ARGS_REQ(5));
+
+  mrb_define_method(mrb, pollfd_cls, "socket",        mrb_pollfd_socket_get, MRB_ARGS_NONE());
+  mrb_define_method(mrb, pollfd_cls, "socket=",       mrb_pollfd_socket_set, MRB_ARGS_REQ(1));
+  mrb_define_method(mrb, pollfd_cls, "events",        mrb_pollfd_events_get, MRB_ARGS_NONE());
+  mrb_define_method(mrb, pollfd_cls, "events=",       mrb_pollfd_events_set, MRB_ARGS_REQ(1));
+  mrb_define_method(mrb, pollfd_cls, "revents",       mrb_pollfd_revents_get, MRB_ARGS_NONE());
+  mrb_define_method(mrb, pollfd_cls, "revents=",      mrb_pollfd_revents_set, MRB_ARGS_REQ(1));
+  mrb_define_method(mrb, pollfd_cls, "readable?",     mrb_pollfd_readable,    MRB_ARGS_NONE());
+  mrb_define_method(mrb, pollfd_cls, "writable?",     mrb_pollfd_writable,    MRB_ARGS_NONE());
+  mrb_define_method(mrb, pollfd_cls, "err?",          mrb_pollfd_err,         MRB_ARGS_NONE());
+  mrb_define_method(mrb, pollfd_cls, "disconnected?", mrb_pollfd_disconnected,MRB_ARGS_NONE());
+
+  mrb_define_const(mrb, mrb->kernel_module, "STDIN_FILENO",  mrb_convert_number(mrb, STDIN_FILENO));
   mrb_define_const(mrb, mrb->kernel_module, "STDOUT_FILENO", mrb_convert_number(mrb, STDOUT_FILENO));
   mrb_define_const(mrb, mrb->kernel_module, "STDERR_FILENO", mrb_convert_number(mrb, STDERR_FILENO));
 }
 
-void
-mrb_mruby_poll_gem_final(mrb_state*) {}
+void mrb_mruby_poll_gem_final(mrb_state* mrb) {
+  /* nothing */
+}
 MRB_END_DECL

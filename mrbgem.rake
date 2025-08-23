@@ -10,5 +10,5 @@ MRuby::Gem::Specification.new('mruby-poll') do |spec|
     spec.linker.libraries << "ws2_32"
   end
 
-  spec.cc.defines << '_XOPEN_SOURCE'
+  spec.cxx.defines << '_XOPEN_SOURCE'
 end
