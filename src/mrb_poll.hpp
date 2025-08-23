@@ -12,23 +12,22 @@
 
 #include <stdlib.h>
 #include <mruby.h>
-#ifdef _WIN32
-  #if MRB_INT_BIT < 64
-  #error "needs 64 bit mruby on windows"
-  #endif
-#else
-  #if MRB_INT_BIT < 32
-  #error "needs at least 32 bit mruby"
-  #endif
-#endif
+#include <mruby/value.h>
 #include <mruby/hash.h>
 #include <mruby/array.h>
 #include <mruby/variable.h>
 #include <errno.h>
 #include <mruby/error.h>
 #include <mruby/class.h>
-
+#include <mruby/data.h>
+#include <mruby/gc.h>
 #include <string.h>
-#include <mruby/throw.h>
+
+#include <new>
+#include <vector>
+#include <algorithm>
+#include <functional>
+#include <mruby/cpp_helpers.hpp>
+#include <mruby/num_helpers.hpp>
 
 #endif
