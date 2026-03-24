@@ -186,8 +186,10 @@ mrb_pollset_initialize(mrb_state *mrb, mrb_value self)
   pollset->pollfd_size = 0;
   pollset->pollfd_capa = 8;
   pollset->fds_array = mrb_ary_new_capa(mrb, 8);
+  mrb_gc_protect(mrb, pollset->fds_array);
   mrb_iv_set(mrb, self, MRB_SYM(fds), pollset->fds_array);
   pollset->clear_list_array = mrb_ary_new(mrb);
+  mrb_gc_protect(mrb, pollset->clear_list_array);
   mrb_iv_set(mrb, self, MRB_SYM(clear_list), pollset->clear_list_array);
   mrb_iv_set(mrb, self, MRB_SYM(in_wait), mrb_false_value());
   return self;
@@ -255,13 +257,14 @@ mrb_poll_add(mrb_state *mrb, mrb_value self)
 
   // build Poll::Fd object
   struct RClass* pollfd_cls = mrb_class_get_under_id(mrb, mrb_class(mrb, self), MRB_SYM(_Fd));
-mrb_value args[4];
-args[0] = self;                                      // pollset_obj
-args[1] = mrb_fixnum_value(idx);                       // pollfd_index
-args[2] = mrb_cptr_value(mrb, &pollset->fds[idx]);     // pointer to struct pollfd
-args[3] = socket_v;
+  mrb_value args[4];
+  args[0] = self;                                      // pollset_obj
+  args[1] = mrb_fixnum_value(idx);                       // pollfd_index
+  args[2] = mrb_cptr_value(mrb, &pollset->fds[idx]);     // pointer to struct pollfd
+  args[3] = socket_v;
 
-mrb_value fd_obj = mrb_obj_new(mrb, pollfd_cls, 4, args);
+  mrb_value fd_obj = mrb_obj_new(mrb, pollfd_cls, 4, args);
+  mrb_gc_protect(mrb, fd_obj);
 
   // Set socket ivar for convenience/consistency
 
@@ -406,6 +409,7 @@ mrb_poll_remove_update_or_add(mrb_state *mrb, mrb_value self)
   args[2] = mrb_cptr_value(mrb, &pollset->fds[new_idx]);
   args[3] = socket_v;
   mrb_value fd_obj = mrb_obj_new(mrb, pollfd_cls, 4, args);
+  mrb_gc_protect(mrb, fd_obj);
   mrb_ary_push(mrb, pollset->fds_array, fd_obj);
   pollset->pollfd_size++;
 
@@ -464,11 +468,14 @@ mrb_poll_wait(mrb_state *mrb, mrb_value self)
   } else {
     // build and return array
     mrb_value ready_ary = mrb_ary_new_capa(mrb, ret);
+    mrb_gc_protect(mrb, ready_ary);
+    int idx = mrb_gc_arena_save(mrb);
     for (size_t i = 0;  i < pollset->pollfd_size; i++) {
       if (pollset->fds[i].revents != 0) {
         mrb_value fd_obj = mrb_ary_ref(mrb, pollset->fds_array, i);
         sync_fd_pointer_for(pollset, mrb, i);
         mrb_ary_push(mrb, ready_ary, fd_obj);
+        mrb_gc_arena_restore(mrb, idx);
       }
     }
     mrb_iv_set(mrb, self, MRB_SYM(in_wait), mrb_false_value());
